@@ -1,5 +1,6 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { ApiKeyForm } from "@/components/settings/ApiKeyForm";
+import { RepoLinkForm } from "@/components/settings/RepoLinkForm";
 
 export default function SettingsPage() {
   return (
@@ -7,14 +8,15 @@ export default function SettingsPage() {
       <div className="max-w-2xl mx-auto space-y-6">
         <div>
           <h1 className="text-2xl font-bold text-white">Settings</h1>
-          <p className="text-gray-400 mt-1">Configure your AI provider API keys</p>
+          <p className="text-gray-400 mt-1">Configure API keys, provider access, and code repo links</p>
         </div>
 
+        {/* ── OpenAI Admin Key ── */}
         <Card className="bg-gray-900 border-gray-800">
           <CardHeader>
-            <CardTitle className="text-white">OpenAI</CardTitle>
+            <CardTitle className="text-white">OpenAI Admin API Key</CardTitle>
             <CardDescription className="text-gray-400">
-              An Admin API key is required to access usage and cost data across all projects.
+              Required to pull usage and cost data across all projects and API keys.
               Generate one at{" "}
               <a
                 href="https://platform.openai.com/settings/organization/admin-keys"
@@ -31,23 +33,43 @@ export default function SettingsPage() {
           </CardContent>
         </Card>
 
-        <Card className="bg-gray-900/50 border-gray-800 border-dashed opacity-60">
+        {/* ── GitHub Repo Links ── */}
+        <Card className="bg-gray-900 border-gray-800">
           <CardHeader>
-            <CardTitle className="text-gray-500">Anthropic — Coming in Phase 2</CardTitle>
+            <CardTitle className="text-white">GitHub Repo Links</CardTitle>
+            <CardDescription className="text-gray-400">
+              Link each API key to a GitHub repository. When you run AI Analysis, the scanner
+              finds model call sites in your code and recommendations will name exact files and
+              line numbers rather than generic patterns.
+              Requires a <code className="bg-gray-800 px-1 rounded text-xs">GITHUB_TOKEN</code> (read-only PAT) set in Vercel environment variables.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <RepoLinkForm />
+          </CardContent>
+        </Card>
+
+        {/* ── Future providers ── */}
+        <Card className="bg-gray-900 border-gray-800">
+          <CardHeader>
+            <CardTitle className="text-white text-sm">SmartRouter — Coming in Phase 1</CardTitle>
+            <CardDescription className="text-gray-500 text-xs">
+              Drop-in OpenAI-compatible proxy that automatically routes to the cheapest model
+              that meets your quality requirements. BYOK (bring your own provider keys).
+              Set routing rules per project, budget ceilings, and task-type overrides.
+            </CardDescription>
           </CardHeader>
         </Card>
 
-        <Card className="bg-gray-900/50 border-gray-800 border-dashed opacity-60">
-          <CardHeader>
-            <CardTitle className="text-gray-500">Google Vertex AI — Coming in Phase 2</CardTitle>
-          </CardHeader>
-        </Card>
-
-        <Card className="bg-gray-900/50 border-gray-800 border-dashed opacity-60">
-          <CardHeader>
-            <CardTitle className="text-gray-500">AWS Bedrock — Coming in Phase 2</CardTitle>
-          </CardHeader>
-        </Card>
+        <div className="grid grid-cols-3 gap-3">
+          {["Anthropic", "Google Vertex AI", "AWS Bedrock"].map((p) => (
+            <Card key={p} className="bg-gray-900/40 border-gray-800 border-dashed opacity-50">
+              <CardHeader className="py-3">
+                <CardTitle className="text-gray-600 text-xs">{p} — Phase 2</CardTitle>
+              </CardHeader>
+            </Card>
+          ))}
+        </div>
       </div>
     </div>
   );

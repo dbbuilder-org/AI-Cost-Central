@@ -100,6 +100,76 @@ function buildPrompt(summary: SpendSummary): string {
   });
 }
 
+interface CodeHit {
+  file: string;
+  line: number;
+  snippet: string;
+  model: string;
+}
+
+interface RepoScanResult {
+  apiKeyName: string;
+  repo: string;
+  hits: CodeHit[];
+}
+
+async function fetchRepoScans(): Promise<RepoScanResult[]> {
+  if (!process.env.GITHUB_TOKEN) return [];
+  try {
+    // Fetch repo links from KV
+    let links: Array<{ apiKeyName: string; githubOwner: string; githubRepo: string; pathFilter: string }> = [];
+    if (process.env.KV_REST_API_URL) {
+      const { kv } = await import("@vercel/kv");
+      links = (await kv.get("aicc:repo-links")) ?? [];
+    }
+    if (!links.length) return [];
+
+    // Check cache first, then scan
+    const results: RepoScanResult[] = [];
+    for (const link of links.slice(0, 5)) { // cap at 5 repos to stay within Haiku context
+      const cacheKey = `aicc:repo-scan:${link.githubOwner}/${link.githubRepo}`;
+      let scan: { hits: CodeHit[] } | null = null;
+      if (process.env.KV_REST_API_URL) {
+        const { kv } = await import("@vercel/kv");
+        scan = await kv.get(cacheKey);
+      }
+      if (!scan) {
+        const res = await fetch(`${process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000"}/api/github/scan`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ owner: link.githubOwner, repo: link.githubRepo, pathFilter: link.pathFilter }),
+        });
+        if (res.ok) {
+          scan = await res.json();
+          if (process.env.KV_REST_API_URL && scan) {
+            const { kv } = await import("@vercel/kv");
+            await kv.set(cacheKey, scan, { ex: 21600 }); // 6h TTL
+          }
+        }
+      }
+      if (scan?.hits?.length) {
+        results.push({ apiKeyName: link.apiKeyName, repo: `${link.githubOwner}/${link.githubRepo}`, hits: scan.hits.slice(0, 20) });
+      }
+    }
+    return results;
+  } catch {
+    return [];
+  }
+}
+
+function buildRepoContext(scans: RepoScanResult[]): string {
+  if (!scans.length) return "";
+  const lines = ["\n\nREPO CODE CONTEXT (model call sites found in linked GitHub repos):"];
+  for (const scan of scans) {
+    lines.push(`\nAPI Key: ${scan.apiKeyName} → Repo: ${scan.repo}`);
+    for (const hit of scan.hits.slice(0, 8)) {
+      lines.push(`  File: ${hit.file}:${hit.line} (model: ${hit.model})\n  \`\`\`\n${hit.snippet}\n  \`\`\``);
+    }
+  }
+  lines.push("\nUse the code context to make file-specific recommendations. Name the exact file and line.");
+  return lines.join("\n");
+}
+
 export async function POST(req: NextRequest) {
   if (!process.env.ANTHROPIC_API_KEY) {
     return NextResponse.json({ error: "ANTHROPIC_API_KEY not configured" }, { status: 500 });
@@ -107,17 +177,21 @@ export async function POST(req: NextRequest) {
 
   const summary: SpendSummary = await req.json();
 
+  // Fetch repo scan data in parallel (best-effort, won't block if fails)
+  const repoScans = await fetchRepoScans().catch(() => [] as RepoScanResult[]);
+  const repoContext = buildRepoContext(repoScans);
+
   try {
+    const userContent = buildPrompt(summary) + repoContext;
     const message = await client.messages.create({
       model: "claude-haiku-4-5-20251001",
       max_tokens: 3000,
       temperature: 0.1,
       system: SYSTEM_PROMPT,
-      messages: [{ role: "user", content: buildPrompt(summary) }],
+      messages: [{ role: "user", content: userContent }],
     });
 
     const text = message.content[0].type === "text" ? message.content[0].text : "";
-    // Strip any accidental markdown fences
     const cleaned = text.replace(/^```(?:json)?\n?/m, "").replace(/\n?```$/m, "").trim();
     const recommendations: Recommendation[] = JSON.parse(cleaned);
     return NextResponse.json(recommendations);
