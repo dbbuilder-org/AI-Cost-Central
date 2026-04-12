@@ -71,8 +71,8 @@ export async function GET(req: NextRequest) {
   const now = Math.floor(Date.now() / 1000);
   const start = now - days * 86400;
 
-  const usageParams = `start_time=${start}&end_time=${now}&limit=180&bucket_width=1d&group_by[]=model&group_by[]=api_key_id`;
-  const costParams = `start_time=${start}&end_time=${now}&limit=180&bucket_width=1d&group_by[]=line_item`;
+  const usageParams = `start_time=${start}&end_time=${now}&limit=31&bucket_width=1d&group_by[]=model&group_by[]=api_key_id`;
+  const costParams = `start_time=${start}&end_time=${now}&limit=31&bucket_width=1d`;
 
   try {
     const [completionBuckets, embeddingBuckets, costBuckets, keyNames] = await Promise.all([
