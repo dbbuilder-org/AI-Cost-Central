@@ -1,35 +1,25 @@
 import type { UsageRow, SpendSummary, ModelSummary, KeySummary, DaySummary, WeekSummary } from "@/types";
 
-// OpenAI Admin API response shapes
 interface OAIUsageBucket {
-  object: "bucket";
   start_time: number;
-  end_time: number;
   results: OAIUsageResult[];
 }
 
 interface OAIUsageResult {
-  object: "organization.usage.completions.result" | "organization.usage.embeddings.result";
   input_tokens?: number;
   output_tokens?: number;
   num_model_requests: number;
-  project_id: string | null;
-  user_id: string | null;
   api_key_id: string | null;
   model: string | null;
 }
 
 interface OAICostBucket {
-  object: "bucket";
   start_time: number;
-  end_time: number;
   results: OAICostResult[];
 }
 
 interface OAICostResult {
-  object: "organization.costs.result";
-  amount: { value: number; currency: string };
-  project_id: string | null;
+  amount: { value: string | number; currency: string };
   line_item: string | null;
 }
 
@@ -37,7 +27,7 @@ export interface OAIRawData {
   completionBuckets: OAIUsageBucket[];
   embeddingBuckets: OAIUsageBucket[];
   costBuckets: OAICostBucket[];
-  keyNames: Record<string, string>; // keyId → name
+  keyNames: Record<string, string>;
 }
 
 function tsToDate(ts: number): string {
@@ -45,29 +35,30 @@ function tsToDate(ts: number): string {
 }
 
 export function transformOpenAI(raw: OAIRawData): UsageRow[] {
-  // Build a cost-per-day lookup (costs don't have model/key breakdown from OpenAI)
+  // Build cost-by-day (org-level total; we distribute proportionally by requests)
   const costByDay: Record<string, number> = {};
   for (const bucket of raw.costBuckets) {
     const date = tsToDate(bucket.start_time);
     for (const r of bucket.results) {
-      costByDay[date] = (costByDay[date] ?? 0) + r.amount.value;
+      const amt = typeof r.amount.value === "string" ? parseFloat(r.amount.value) : r.amount.value;
+      if (!isNaN(amt)) costByDay[date] = (costByDay[date] ?? 0) + amt;
     }
   }
 
-  // Aggregate usage across completion + embedding buckets
+  // Aggregate usage — now grouped by model + api_key_id from the API
   const rowMap = new Map<string, UsageRow>();
 
   const processBucket = (bucket: OAIUsageBucket) => {
     const date = tsToDate(bucket.start_time);
     for (const r of bucket.results) {
-      const keyId = r.api_key_id ?? "unknown";
+      const keyId = r.api_key_id ?? "org";
       const model = r.model ?? "unknown";
-      const key = `${keyId}|${model}|${date}`;
+      const mapKey = `${keyId}|${model}|${date}`;
 
-      const existing = rowMap.get(key) ?? {
+      const existing = rowMap.get(mapKey) ?? {
         provider: "openai" as const,
         apiKeyId: keyId,
-        apiKeyName: raw.keyNames[keyId] ?? keyId,
+        apiKeyName: raw.keyNames[keyId] ?? (keyId === "org" ? "Org (unattributed)" : keyId),
         model,
         date,
         inputTokens: 0,
@@ -81,21 +72,16 @@ export function transformOpenAI(raw: OAIRawData): UsageRow[] {
       existing.inputTokens += r.input_tokens ?? 0;
       existing.outputTokens += r.output_tokens ?? 0;
       existing.requests += r.num_model_requests;
-      rowMap.set(key, existing);
+      rowMap.set(mapKey, existing);
     }
   };
 
   for (const b of raw.completionBuckets) processBucket(b);
   for (const b of raw.embeddingBuckets) processBucket(b);
 
-  // Distribute daily costs proportionally by request count per model/key
-  // (OpenAI cost API doesn't break down by model in granular way in all tiers)
-  // Fallback: use known OpenAI pricing to estimate, or mark as "apportioned"
-  const rows = Array.from(rowMap.values());
-
-  // Group rows by date to distribute cost
+  // Distribute daily cost proportionally by request count across all rows that day
   const byDate: Record<string, UsageRow[]> = {};
-  for (const row of rows) {
+  for (const row of rowMap.values()) {
     (byDate[row.date] ??= []).push(row);
   }
 
@@ -109,7 +95,7 @@ export function transformOpenAI(raw: OAIRawData): UsageRow[] {
     }
   }
 
-  return rows.sort((a, b) => a.date.localeCompare(b.date));
+  return Array.from(rowMap.values()).sort((a, b) => a.date.localeCompare(b.date));
 }
 
 export function buildSummary(rows: UsageRow[], days: number): SpendSummary {
@@ -153,11 +139,9 @@ export function buildSummary(rows: UsageRow[], days: number): SpendSummary {
     k.requests += r.requests;
     keyMap.set(r.apiKeyId, k);
   }
-  // Add per-model breakdown per key
   for (const [keyId, keySummary] of keyMap.entries()) {
-    const keyRows = filtered.filter((r) => r.apiKeyId === keyId);
     const km = new Map<string, ModelSummary>();
-    for (const r of keyRows) {
+    for (const r of filtered.filter((r) => r.apiKeyId === keyId)) {
       const m = km.get(r.model) ?? {
         model: r.model, costUSD: 0, requests: 0,
         inputTokens: 0, outputTokens: 0, costPer1KInput: 0, costPer1KOutput: 0,
@@ -182,7 +166,7 @@ export function buildSummary(rows: UsageRow[], days: number): SpendSummary {
   }
   const byDay = Array.from(dayMap.values()).sort((a, b) => a.date.localeCompare(b.date));
 
-  // Weekly trend
+  // Weekly trend (4 weeks)
   const weeklyTrend: WeekSummary[] = [];
   for (let w = 3; w >= 0; w--) {
     const start = new Date();
@@ -194,11 +178,7 @@ export function buildSummary(rows: UsageRow[], days: number): SpendSummary {
     const weekCost = filtered
       .filter((r) => r.date >= startStr && r.date < endStr)
       .reduce((s, r) => s + r.costUSD, 0);
-    weeklyTrend.push({
-      weekLabel: `W${4 - w}`,
-      startDate: startStr,
-      costUSD: weekCost,
-    });
+    weeklyTrend.push({ weekLabel: `W${4 - w}`, startDate: startStr, costUSD: weekCost });
   }
 
   return { totalCostUSD, totalRequests, totalInputTokens, totalOutputTokens, byModel, byApiKey, byDay, weeklyTrend };

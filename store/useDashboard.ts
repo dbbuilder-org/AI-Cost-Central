@@ -11,20 +11,11 @@ interface DashboardState {
   analyzing: boolean;
   error: string | null;
   dateRange: DateRange;
-  filterModel: string;
-  filterKeyId: string;
   lastFetched: number | null;
 
   fetchData: () => Promise<void>;
   runAnalysis: () => Promise<void>;
   setDateRange: (r: DateRange) => void;
-  setFilterModel: (m: string) => void;
-  setFilterKey: (k: string) => void;
-}
-
-function getStoredKey(): string | null {
-  if (typeof window === "undefined") return null;
-  return localStorage.getItem("aicc:keys:openai");
 }
 
 export const useDashboard = create<DashboardState>((set, get) => ({
@@ -35,27 +26,17 @@ export const useDashboard = create<DashboardState>((set, get) => ({
   analyzing: false,
   error: null,
   dateRange: "28d",
-  filterModel: "all",
-  filterKeyId: "all",
   lastFetched: null,
 
   fetchData: async () => {
-    const key = getStoredKey();
-    if (!key) {
-      set({ error: "No OpenAI Admin API key configured. Go to Settings.", loading: false });
-      return;
-    }
-
-    // Throttle: don't re-fetch within 60 seconds
     const now = Date.now();
     const last = get().lastFetched;
     if (last && now - last < 60_000) return;
 
     set({ loading: true, error: null });
     try {
-      const res = await fetch("/api/openai/usage?days=28", {
-        headers: { "x-openai-admin-key": key },
-      });
+      // Server uses OPENAI_ADMIN_KEY env var — no client key needed
+      const res = await fetch("/api/openai/usage?days=28");
       if (!res.ok) {
         const err = await res.json().catch(() => ({ error: res.statusText }));
         throw new Error(err.error ?? "Failed to fetch usage");
@@ -64,8 +45,7 @@ export const useDashboard = create<DashboardState>((set, get) => ({
       const summary = buildSummary(rows, parseInt(get().dateRange));
       set({ rows, summary, loading: false, lastFetched: Date.now() });
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : "Unknown error";
-      set({ error: msg, loading: false });
+      set({ error: e instanceof Error ? e.message : "Unknown error", loading: false });
     }
   },
 
@@ -83,8 +63,7 @@ export const useDashboard = create<DashboardState>((set, get) => ({
       const recs: Recommendation[] = await res.json();
       set({ recommendations: recs, analyzing: false });
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : "Analysis failed";
-      set({ error: msg, analyzing: false });
+      set({ error: e instanceof Error ? e.message : "Analysis failed", analyzing: false });
     }
   },
 
@@ -94,7 +73,4 @@ export const useDashboard = create<DashboardState>((set, get) => ({
     const summary = rows.length > 0 ? buildSummary(rows, days) : null;
     set({ dateRange, summary });
   },
-
-  setFilterModel: (filterModel) => set({ filterModel }),
-  setFilterKey: (filterKeyId) => set({ filterKeyId }),
 }));

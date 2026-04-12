@@ -96,9 +96,6 @@ export default function DashboardPage() {
         {error && (
           <div className="rounded-lg border border-red-800 bg-red-900/20 p-4 text-sm text-red-300">
             {error}
-            {error.includes("Settings") && (
-              <Link href="/settings" className="ml-2 underline text-red-200">Go to Settings →</Link>
-            )}
           </div>
         )}
 
@@ -113,14 +110,10 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {/* No key state */}
+        {/* Empty state (data loaded but nothing returned) */}
         {!loading && !summary && !error && (
           <div className="text-center py-20 text-gray-500">
-            <p className="text-4xl mb-4">🔑</p>
-            <p className="text-lg text-gray-400">No API key configured</p>
-            <p className="text-sm mt-2">
-              <Link href="/settings" className="text-indigo-400 hover:underline">Add your OpenAI Admin key →</Link>
-            </p>
+            <p className="text-lg text-gray-400">No usage data found for the selected period.</p>
           </div>
         )}
 

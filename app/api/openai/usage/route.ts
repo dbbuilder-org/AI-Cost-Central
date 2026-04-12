@@ -3,47 +3,84 @@ import { transformOpenAI, type OAIRawData } from "@/lib/transform";
 
 const BASE = "https://api.openai.com/v1/organization";
 
-async function paginate(url: string, token: string): Promise<unknown[]> {
+// Usage endpoints use cursor via `next_page` token; costs use `after`
+async function paginateUsage(url: string, token: string): Promise<unknown[]> {
   const results: unknown[] = [];
-  let after: string | null = null;
+  let nextPage: string | null = null;
   do {
-    const fullUrl: string = after ? `${url}&after=${after}` : url;
-    const res = await fetch(fullUrl, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
+    const fullUrl: string = nextPage ? `${url}&page=${encodeURIComponent(nextPage)}` : url;
+    const res = await fetch(fullUrl, { headers: { Authorization: `Bearer ${token}` } });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
       throw new Error(body?.error?.message ?? `OpenAI API error ${res.status}`);
     }
     const data = await res.json();
     results.push(...(data.data ?? []));
-    after = data.has_more ? data.last_id ?? null : null;
-  } while (after);
+    nextPage = data.has_more && data.next_page ? data.next_page : null;
+  } while (nextPage);
   return results;
 }
 
+async function paginateCosts(url: string, token: string): Promise<unknown[]> {
+  const results: unknown[] = [];
+  let nextPage: string | null = null;
+  do {
+    const fullUrl: string = nextPage ? `${url}&page=${encodeURIComponent(nextPage)}` : url;
+    const res = await fetch(fullUrl, { headers: { Authorization: `Bearer ${token}` } });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body?.error?.message ?? `OpenAI API error ${res.status}`);
+    }
+    const data = await res.json();
+    results.push(...(data.data ?? []));
+    nextPage = data.has_more && data.next_page ? data.next_page : null;
+  } while (nextPage);
+  return results;
+}
+
+async function fetchAllProjectKeys(token: string): Promise<Record<string, string>> {
+  // List projects, then fetch keys per project
+  const projectsRes = await fetch(`${BASE}/projects?limit=100`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  const projectsData = await projectsRes.json();
+  const projects: { id: string; name: string }[] = projectsData.data ?? [];
+
+  const keyNames: Record<string, string> = {};
+  await Promise.all(
+    projects.map(async (proj) => {
+      const res = await fetch(`${BASE}/projects/${proj.id}/api_keys?limit=100`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) return;
+      const d = await res.json();
+      for (const k of (d.data ?? []) as { id: string; name: string }[]) {
+        keyNames[k.id] = `${k.name} (${proj.name})`;
+      }
+    })
+  );
+  return keyNames;
+}
+
 export async function GET(req: NextRequest) {
-  const key = req.headers.get("x-openai-admin-key") ?? process.env.OPENAI_ADMIN_KEY;
+  // Server env var takes precedence; client header is fallback for local dev override
+  const key = process.env.OPENAI_ADMIN_KEY ?? req.headers.get("x-openai-admin-key");
   if (!key) return NextResponse.json({ error: "No API key provided" }, { status: 401 });
 
   const days = parseInt(req.nextUrl.searchParams.get("days") ?? "28");
   const now = Math.floor(Date.now() / 1000);
   const start = now - days * 86400;
 
-  try {
-    const [completionBuckets, embeddingBuckets, costBuckets, keyList] = await Promise.all([
-      paginate(`${BASE}/usage/completions?start_time=${start}&end_time=${now}&limit=100&bucket_width=1d`, key),
-      paginate(`${BASE}/usage/embeddings?start_time=${start}&end_time=${now}&limit=100&bucket_width=1d`, key),
-      paginate(`${BASE}/costs?start_time=${start}&end_time=${now}&limit=100&bucket_width=1d`, key),
-      fetch(`${BASE}/api_keys?limit=100`, { headers: { Authorization: `Bearer ${key}` } })
-        .then((r) => r.json())
-        .then((d) => d.data ?? []),
-    ]);
+  const usageParams = `start_time=${start}&end_time=${now}&limit=180&bucket_width=1d&group_by[]=model&group_by[]=api_key_id`;
+  const costParams = `start_time=${start}&end_time=${now}&limit=180&bucket_width=1d&group_by[]=line_item`;
 
-    const keyNames: Record<string, string> = {};
-    for (const k of keyList as { id: string; name: string }[]) {
-      keyNames[k.id] = k.name;
-    }
+  try {
+    const [completionBuckets, embeddingBuckets, costBuckets, keyNames] = await Promise.all([
+      paginateUsage(`${BASE}/usage/completions?${usageParams}`, key),
+      paginateUsage(`${BASE}/usage/embeddings?${usageParams}`, key),
+      paginateCosts(`${BASE}/costs?${costParams}`, key),
+      fetchAllProjectKeys(key),
+    ]);
 
     const raw: OAIRawData = {
       completionBuckets: completionBuckets as never,
