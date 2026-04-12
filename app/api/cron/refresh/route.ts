@@ -19,7 +19,7 @@ export async function GET(req: NextRequest) {
       const results: unknown[] = [];
       let after: string | null = null;
       do {
-        const fullUrl = after ? `${url}&after=${after}` : url;
+        const fullUrl: string = after ? `${url}&after=${after}` : url;
         const res = await fetch(fullUrl, { headers: { Authorization: `Bearer ${key}` } });
         const data = await res.json();
         results.push(...(data.data ?? []));

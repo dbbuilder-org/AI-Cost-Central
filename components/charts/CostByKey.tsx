@@ -25,9 +25,9 @@ export function CostByKey({ byApiKey }: Props) {
         <XAxis type="number" tick={{ fontSize: 11 }} stroke="#9ca3af" tickFormatter={(v) => `$${v}`} />
         <YAxis type="category" dataKey="name" tick={{ fontSize: 11 }} stroke="#9ca3af" width={100} />
         <Tooltip
-          formatter={(v: number, _n: string, props: { payload?: { fullName?: string } }) => [
-            `$${v.toFixed(4)}`,
-            props.payload?.fullName ?? _n,
+          formatter={(v, _n, props) => [
+            `$${Number(v).toFixed(4)}`,
+            (props.payload as { fullName?: string })?.fullName ?? String(_n),
           ]}
           labelFormatter={() => ""}
         />

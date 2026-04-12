@@ -7,7 +7,7 @@ async function paginate(url: string, token: string): Promise<unknown[]> {
   const results: unknown[] = [];
   let after: string | null = null;
   do {
-    const fullUrl = after ? `${url}&after=${after}` : url;
+    const fullUrl: string = after ? `${url}&after=${after}` : url;
     const res = await fetch(fullUrl, {
       headers: { Authorization: `Bearer ${token}` },
     });

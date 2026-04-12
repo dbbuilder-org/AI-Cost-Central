@@ -33,7 +33,7 @@ export function SpendOverTime({ byDay }: Props) {
         <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
         <XAxis dataKey="date" tick={{ fontSize: 11 }} stroke="#9ca3af" />
         <YAxis tick={{ fontSize: 11 }} stroke="#9ca3af" tickFormatter={(v) => `$${v.toFixed(2)}`} />
-        <Tooltip formatter={(v: number) => [`$${v.toFixed(4)}`, undefined]} />
+        <Tooltip formatter={(v) => [`$${Number(v).toFixed(4)}`, undefined]} />
         <Legend wrapperStyle={{ fontSize: 11 }} />
         {allModels.map((model, i) => (
           <Area
