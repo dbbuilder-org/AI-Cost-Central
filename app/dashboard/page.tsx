@@ -5,6 +5,7 @@ import { useDashboard } from "@/store/useDashboard";
 import { OverviewCards } from "@/components/dashboard/OverviewCards";
 import { ModelEfficiencyTable } from "@/components/dashboard/ModelEfficiencyTable";
 import { RecommendationCards } from "@/components/dashboard/RecommendationCards";
+import { RequestEfficiency } from "@/components/dashboard/RequestEfficiency";
 import { SpendOverTime } from "@/components/charts/SpendOverTime";
 import { CostByModel } from "@/components/charts/CostByModel";
 import { CostByKey } from "@/components/charts/CostByKey";
@@ -136,6 +137,14 @@ export default function DashboardPage() {
                 <TabsTrigger value="efficiency" className="data-[state=active]:bg-gray-800 text-gray-400 data-[state=active]:text-white">
                   Efficiency Table
                 </TabsTrigger>
+                <TabsTrigger value="request-efficiency" className="data-[state=active]:bg-gray-800 text-gray-400 data-[state=active]:text-white">
+                  Request Efficiency
+                  {summary.byModel.some((m) => m.overkillSignal !== "none") && (
+                    <Badge className="ml-2 bg-orange-600 text-white text-xs px-1.5 py-0">
+                      {summary.byModel.filter((m) => m.overkillSignal !== "none").length}
+                    </Badge>
+                  )}
+                </TabsTrigger>
                 {recommendations.length > 0 && (
                   <TabsTrigger value="recommendations" className="data-[state=active]:bg-gray-800 text-gray-400 data-[state=active]:text-white">
                     Recommendations
@@ -162,6 +171,10 @@ export default function DashboardPage() {
               <TabsContent value="efficiency" className="mt-4 bg-gray-900 border border-gray-800 rounded-lg p-4">
                 <h2 className="text-sm font-medium text-gray-400 mb-4">Model Efficiency — green = cheapest per 1K output tokens</h2>
                 <ModelEfficiencyTable byModel={summary.byModel} totalCost={summary.totalCostUSD} />
+              </TabsContent>
+
+              <TabsContent value="request-efficiency" className="mt-4">
+                <RequestEfficiency byModel={summary.byModel} totalCost={summary.totalCostUSD} />
               </TabsContent>
 
               {recommendations.length > 0 && (

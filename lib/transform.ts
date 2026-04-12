@@ -1,4 +1,4 @@
-import type { UsageRow, SpendSummary, ModelSummary, KeySummary, DaySummary, WeekSummary } from "@/types";
+import type { UsageRow, SpendSummary, ModelSummary, KeySummary, DaySummary, WeekSummary, OverkillSignal } from "@/types";
 
 interface OAIUsageBucket {
   start_time: number;
@@ -98,6 +98,26 @@ export function transformOpenAI(raw: OAIRawData): UsageRow[] {
   return Array.from(rowMap.values()).sort((a, b) => a.date.localeCompare(b.date));
 }
 
+// Model tiers: frontier models used for tiny requests are overkill candidates
+const FRONTIER_MODELS = ["gpt-4o", "gpt-4.1", "gpt-4-turbo", "o1", "o3", "gpt-5"];
+const CHEAP_MODELS = ["gpt-4o-mini", "gpt-3.5-turbo", "gpt-4o-mini-2024", "gpt-4.1-mini"];
+
+function isFrontier(model: string): boolean {
+  return FRONTIER_MODELS.some((f) => model.toLowerCase().includes(f)) &&
+    !CHEAP_MODELS.some((c) => model.toLowerCase().includes(c));
+}
+
+function computeOverkill(model: string, avgTotalTokens: number, avgOutput: number): OverkillSignal {
+  if (!isFrontier(model)) return "none";
+  // Frontier model but tiny requests → likely overkill
+  if (avgTotalTokens < 300) return "high";
+  if (avgTotalTokens < 800) return "medium";
+  // Frontier model, very low output → simple task, probably over-engineered
+  if (avgOutput < 50 && avgTotalTokens < 2000) return "medium";
+  if (avgOutput < 20) return "high";
+  return "low";
+}
+
 export function buildSummary(rows: UsageRow[], days: number): SpendSummary {
   const cutoff = new Date();
   cutoff.setDate(cutoff.getDate() - days);
@@ -110,7 +130,7 @@ export function buildSummary(rows: UsageRow[], days: number): SpendSummary {
   const totalOutputTokens = filtered.reduce((s, r) => s + r.outputTokens, 0);
 
   // By model
-  const modelMap = new Map<string, ModelSummary>();
+  const modelMap = new Map<string, Omit<ModelSummary, "avgInputTokens"|"avgOutputTokens"|"avgTotalTokens"|"inputOutputRatio"|"costPerRequest"|"overkillSignal">>();
   for (const r of filtered) {
     const m = modelMap.get(r.model) ?? {
       model: r.model, costUSD: 0, requests: 0,
@@ -122,11 +142,24 @@ export function buildSummary(rows: UsageRow[], days: number): SpendSummary {
     m.outputTokens += r.outputTokens;
     modelMap.set(r.model, m);
   }
-  const byModel = Array.from(modelMap.values()).map((m) => ({
-    ...m,
-    costPer1KInput: m.inputTokens > 0 ? (m.costUSD / m.inputTokens) * 1000 : 0,
-    costPer1KOutput: m.outputTokens > 0 ? (m.costUSD / m.outputTokens) * 1000 : 0,
-  })).sort((a, b) => b.costUSD - a.costUSD);
+  const byModel: ModelSummary[] = Array.from(modelMap.values()).map((m) => {
+    const avgInput = m.requests > 0 ? m.inputTokens / m.requests : 0;
+    const avgOutput = m.requests > 0 ? m.outputTokens / m.requests : 0;
+    const avgTotal = avgInput + avgOutput;
+    const inputOutputRatio = avgOutput > 0 ? avgInput / avgOutput : 0;
+    const costPerRequest = m.requests > 0 ? m.costUSD / m.requests : 0;
+    return {
+      ...m,
+      costPer1KInput: m.inputTokens > 0 ? (m.costUSD / m.inputTokens) * 1000 : 0,
+      costPer1KOutput: m.outputTokens > 0 ? (m.costUSD / m.outputTokens) * 1000 : 0,
+      avgInputTokens: Math.round(avgInput),
+      avgOutputTokens: Math.round(avgOutput),
+      avgTotalTokens: Math.round(avgTotal),
+      inputOutputRatio: parseFloat(inputOutputRatio.toFixed(1)),
+      costPerRequest,
+      overkillSignal: computeOverkill(m.model, avgTotal, avgOutput),
+    };
+  }).sort((a, b) => b.costUSD - a.costUSD);
 
   // By API key
   const keyMap = new Map<string, KeySummary>();
@@ -140,7 +173,7 @@ export function buildSummary(rows: UsageRow[], days: number): SpendSummary {
     keyMap.set(r.apiKeyId, k);
   }
   for (const [keyId, keySummary] of keyMap.entries()) {
-    const km = new Map<string, ModelSummary>();
+    const km = new Map<string, Omit<ModelSummary, "avgInputTokens"|"avgOutputTokens"|"avgTotalTokens"|"inputOutputRatio"|"costPerRequest"|"overkillSignal">>();
     for (const r of filtered.filter((r) => r.apiKeyId === keyId)) {
       const m = km.get(r.model) ?? {
         model: r.model, costUSD: 0, requests: 0,
@@ -152,7 +185,21 @@ export function buildSummary(rows: UsageRow[], days: number): SpendSummary {
       m.outputTokens += r.outputTokens;
       km.set(r.model, m);
     }
-    keySummary.byModel = Array.from(km.values()).sort((a, b) => b.costUSD - a.costUSD);
+    keySummary.byModel = Array.from(km.values()).map((m) => {
+      const avgInput = m.requests > 0 ? m.inputTokens / m.requests : 0;
+      const avgOutput = m.requests > 0 ? m.outputTokens / m.requests : 0;
+      return {
+        ...m,
+        costPer1KInput: m.inputTokens > 0 ? (m.costUSD / m.inputTokens) * 1000 : 0,
+        costPer1KOutput: m.outputTokens > 0 ? (m.costUSD / m.outputTokens) * 1000 : 0,
+        avgInputTokens: Math.round(avgInput),
+        avgOutputTokens: Math.round(avgOutput),
+        avgTotalTokens: Math.round(avgInput + avgOutput),
+        inputOutputRatio: avgOutput > 0 ? parseFloat((avgInput / avgOutput).toFixed(1)) : 0,
+        costPerRequest: m.requests > 0 ? m.costUSD / m.requests : 0,
+        overkillSignal: computeOverkill(m.model, avgInput + avgOutput, avgOutput),
+      };
+    }).sort((a, b) => b.costUSD - a.costUSD);
   }
   const byApiKey = Array.from(keyMap.values()).sort((a, b) => b.costUSD - a.costUSD);
 

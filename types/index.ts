@@ -19,7 +19,7 @@ export interface ApiKeyInfo {
 }
 
 export interface Recommendation {
-  category: "cost_reduction" | "model_migration" | "reporting" | "anomaly";
+  category: "cost_reduction" | "model_migration" | "overkill" | "reporting" | "anomaly";
   finding: string;
   impact: "High" | "Medium" | "Low";
   action: string;
@@ -46,7 +46,16 @@ export interface ModelSummary {
   outputTokens: number;
   costPer1KInput: number;
   costPer1KOutput: number;
+  // Efficiency metrics
+  avgInputTokens: number;       // input tokens per request
+  avgOutputTokens: number;      // output tokens per request
+  avgTotalTokens: number;       // total tokens per request
+  inputOutputRatio: number;     // input / output — high = context-heavy, low output
+  costPerRequest: number;       // USD per request
+  overkillSignal: OverkillSignal;
 }
+
+export type OverkillSignal = "none" | "low" | "medium" | "high";
 
 export interface KeySummary {
   apiKeyId: string;

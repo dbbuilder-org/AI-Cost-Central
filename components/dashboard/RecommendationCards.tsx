@@ -10,6 +10,7 @@ interface Props {
 const CATEGORY_LABELS: Record<string, string> = {
   cost_reduction: "Cost Reduction",
   model_migration: "Model Migration",
+  overkill: "Overkill Risk",
   reporting: "Reporting",
   anomaly: "Anomaly",
 };
@@ -29,6 +30,7 @@ const EFFORT_STYLE: Record<string, string> = {
 const CATEGORY_COLOR: Record<string, string> = {
   cost_reduction: "border-l-4 border-l-indigo-500",
   model_migration: "border-l-4 border-l-amber-500",
+  overkill: "border-l-4 border-l-orange-500",
   reporting: "border-l-4 border-l-cyan-500",
   anomaly: "border-l-4 border-l-red-500",
 };
