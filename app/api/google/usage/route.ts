@@ -143,23 +143,13 @@ export async function GET() {
     return NextResponse.json({ error: `Auth failed: ${e instanceof Error ? e.message : e}` }, { status: 502 });
   }
 
-  // Query available Gemini metrics in parallel
-  const [inputTokenSeries, outputTokenSeries, requestSeries] = await Promise.all([
-    queryMonitoring(token, projectId, "generativelanguage.googleapis.com/token_count",               startTime, endTime),
-    queryMonitoring(token, projectId, "generativelanguage.googleapis.com/generate_content_output_token_count", startTime, endTime),
-    queryMonitoring(token, projectId, "generativelanguage.googleapis.com/generate_content_requests", startTime, endTime),
+  // Google AI Studio only exposes output token counts via Cloud Monitoring.
+  // Input token metric does not exist for gen-lang-client projects.
+  // Request counts are available but not broken down by model.
+  const [outputTokenSeries, requestSeries] = await Promise.all([
+    queryMonitoring(token, projectId, "generativelanguage.googleapis.com/generate_content_usage_output_token_count", startTime, endTime),
+    queryMonitoring(token, projectId, "serviceruntime.googleapis.com/api/request_count", startTime, endTime),
   ]);
-
-  // If no Monitoring data, try the AI Platform metrics (Vertex AI path)
-  const [vertexInputSeries, vertexOutputSeries] = inputTokenSeries.length === 0
-    ? await Promise.all([
-        queryMonitoring(token, projectId, "aiplatform.googleapis.com/publisher/online_serving/input_token_count",  startTime, endTime),
-        queryMonitoring(token, projectId, "aiplatform.googleapis.com/publisher/online_serving/output_token_count", startTime, endTime),
-      ])
-    : [[], []];
-
-  const allInputSeries  = [...inputTokenSeries,  ...vertexInputSeries];
-  const allOutputSeries = [...outputTokenSeries, ...vertexOutputSeries];
 
   // Aggregate by date + model
   type Row = { date: string; model: string; inputTokens: number; outputTokens: number; requests: number; costUSD: number; provider: string };
@@ -180,16 +170,35 @@ export async function GET() {
     }
   }
 
-  addPoints(allInputSeries,  "inputTokens");
-  addPoints(allOutputSeries, "outputTokens");
-  addPoints(requestSeries,   "requests");
+  addPoints(outputTokenSeries, "outputTokens");
+  // Request count has no model label — add to a catch-all row
+  for (const ts of requestSeries) {
+    for (const pt of ts.points) {
+      const date = pt.interval.endTime.slice(0, 10);
+      const value = parseInt(pt.value.int64Value ?? "0") || (pt.value.doubleValue ?? 0);
+      // Spread requests proportionally across models that have output token data for this date
+      // For now just track total; proportional split happens client-side
+      const key = `${date}|_total_requests`;
+      if (!aggregated[key]) {
+        aggregated[key] = { date, model: "_requests", inputTokens: 0, outputTokens: 0, requests: 0, costUSD: 0, provider: "google" };
+      }
+      aggregated[key].requests += value;
+    }
+  }
 
-  // Calculate costs
+  // Calculate costs from output tokens only (input token metric not available for AI Studio)
+  // Cost is a lower bound — actual cost includes input tokens billed by Google
   for (const row of Object.values(aggregated)) {
+    if (row.model === "_requests") continue;
     row.costUSD = calcCost(row.model, row.inputTokens, row.outputTokens);
   }
 
-  const rows = Object.values(aggregated).sort((a, b) => b.date.localeCompare(a.date));
+  const rows = Object.values(aggregated)
+    .filter((r) => r.model !== "_requests")
+    .sort((a, b) => b.date.localeCompare(a.date));
+  const totalRequests = Object.values(aggregated)
+    .filter((r) => r.model === "_requests")
+    .reduce((s, r) => s + r.requests, 0);
 
   // Summary
   const byModel: Record<string, { costUSD: number; inputTokens: number; outputTokens: number; requests: number }> = {};
@@ -207,9 +216,11 @@ export async function GET() {
     rows,
     summary: {
       totalCostUSD: rows.reduce((s, r) => s + r.costUSD, 0),
+      totalRequests,
       byModel,
       hasData,
       projectId,
+      inputTokensNote: "Google AI Studio does not expose input token counts via Cloud Monitoring. Output tokens only. Actual cost = ~2-4x shown (input tokens billed separately).",
       note: hasData
         ? undefined
         : "No Monitoring data found. The service account may need roles/monitoring.viewer on this project, or Gemini usage may not be emitting metrics to Cloud Monitoring. Check https://console.cloud.google.com/monitoring for available metrics.",
