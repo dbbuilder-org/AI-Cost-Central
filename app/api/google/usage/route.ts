@@ -42,6 +42,29 @@ const GOOGLE_PRICING: Record<string, { input: number; output: number }> = {
   "gemini-embedding":             { input: 0.15,   output: 0     },
 };
 
+// Image/vision models — input is a short text prompt, output is the generated image
+// (billed per-image, not per-token, so token counts are misleading for these)
+const IMAGE_MODEL_PATTERNS = [
+  "image", "imagen", "veo", "vision", "photo", "preview-image", "flash-image",
+];
+
+function isImageModel(modelId: string): boolean {
+  const lower = modelId.toLowerCase();
+  return IMAGE_MODEL_PATTERNS.some((p) => lower.includes(p));
+}
+
+/**
+ * Estimate input tokens when Google doesn't expose them.
+ * Text models: input ≈ output (user prompts tend to match response length)
+ * Image models: input prompt is tiny — ~2% of output token count
+ */
+function estimateInputTokens(modelId: string, outputTokens: number): number {
+  if (isImageModel(modelId)) {
+    return Math.round(outputTokens * 0.02); // ~2% — short text prompts
+  }
+  return outputTokens; // 1:1 ratio → doubles the estimate
+}
+
 function getPricing(modelId: string) {
   const exact = GOOGLE_PRICING[modelId];
   if (exact) return exact;
@@ -186,10 +209,11 @@ export async function GET() {
     }
   }
 
-  // Calculate costs from output tokens only (input token metric not available for AI Studio)
-  // Cost is a lower bound — actual cost includes input tokens billed by Google
+  // Estimate input tokens (Google doesn't expose them for AI Studio projects)
+  // Text models: input ≈ output (1:1). Image models: input ≈ 2% of output.
   for (const row of Object.values(aggregated)) {
     if (row.model === "_requests") continue;
+    row.inputTokens = estimateInputTokens(row.model, row.outputTokens);
     row.costUSD = calcCost(row.model, row.inputTokens, row.outputTokens);
   }
 
@@ -220,7 +244,7 @@ export async function GET() {
       byModel,
       hasData,
       projectId,
-      inputTokensNote: "Google AI Studio does not expose input token counts via Cloud Monitoring. Output tokens only. Actual cost = ~2-4x shown (input tokens billed separately).",
+      inputTokensNote: "Google AI Studio does not expose input token counts. Estimated: text models = output×1 (1:1 ratio), image models = output×0.02 (2% — short prompts).",
       note: hasData
         ? undefined
         : "No Monitoring data found. The service account may need roles/monitoring.viewer on this project, or Gemini usage may not be emitting metrics to Cloud Monitoring. Check https://console.cloud.google.com/monitoring for available metrics.",
