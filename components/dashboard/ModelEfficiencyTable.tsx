@@ -23,6 +23,12 @@ function fmtNum(n: number): string {
   return n.toString();
 }
 
+function providerBadge(provider?: string) {
+  if (provider === "anthropic") return <span className="ml-1.5 px-1 py-0.5 rounded text-[10px] font-medium bg-orange-900/60 text-orange-300">ANT</span>;
+  if (provider === "google") return <span className="ml-1.5 px-1 py-0.5 rounded text-[10px] font-medium bg-green-900/60 text-green-300">GGL</span>;
+  return <span className="ml-1.5 px-1 py-0.5 rounded text-[10px] font-medium bg-indigo-900/60 text-indigo-300">OAI</span>;
+}
+
 export function ModelEfficiencyTable({ byModel, totalCost }: Props) {
   const maxCostPer1K = Math.max(...byModel.map((m) => m.costPer1KOutput), 0);
 
@@ -44,7 +50,9 @@ export function ModelEfficiencyTable({ byModel, totalCost }: Props) {
         <TableBody>
           {byModel.map((m) => (
             <TableRow key={m.model} className="border-gray-800 hover:bg-gray-800/50">
-              <TableCell className="font-mono text-sm text-gray-200">{m.model}</TableCell>
+              <TableCell className="font-mono text-sm text-gray-200">
+                {m.model}{providerBadge(m.provider)}
+              </TableCell>
               <TableCell className="text-right text-gray-300">{fmtNum(m.requests)}</TableCell>
               <TableCell className="text-right text-gray-300">{fmtNum(m.inputTokens)}</TableCell>
               <TableCell className="text-right text-gray-300">{fmtNum(m.outputTokens)}</TableCell>

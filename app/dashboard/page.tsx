@@ -5,6 +5,7 @@ import { useDashboard } from "@/store/useDashboard";
 import { OverviewCards } from "@/components/dashboard/OverviewCards";
 import { ModelEfficiencyTable } from "@/components/dashboard/ModelEfficiencyTable";
 import { RecommendationCards } from "@/components/dashboard/RecommendationCards";
+import { AlertsPanel } from "@/components/dashboard/AlertsPanel";
 import { RequestEfficiency } from "@/components/dashboard/RequestEfficiency";
 import { SpendOverTime } from "@/components/charts/SpendOverTime";
 import { CostByModel } from "@/components/charts/CostByModel";
@@ -56,8 +57,8 @@ export default function DashboardPage() {
         {/* Header row */}
         <div className="flex items-center justify-between flex-wrap gap-3">
           <div>
-            <h1 className="text-xl font-bold text-white">OpenAI Spend Dashboard</h1>
-            <p className="text-sm text-gray-500">Usage and cost analysis across all API keys</p>
+            <h1 className="text-xl font-bold text-white">AI Spend Dashboard</h1>
+            <p className="text-sm text-gray-500">OpenAI · Anthropic · Google — usage and cost across all providers</p>
           </div>
           <div className="flex items-center gap-2">
             {/* Date range */}
@@ -125,6 +126,9 @@ export default function DashboardPage() {
 
             <Tabs defaultValue="spend">
               <TabsList className="bg-gray-900 border border-gray-800">
+                <TabsTrigger value="alerts" className="data-[state=active]:bg-gray-800 text-gray-400 data-[state=active]:text-white">
+                  Alerts
+                </TabsTrigger>
                 <TabsTrigger value="spend" className="data-[state=active]:bg-gray-800 text-gray-400 data-[state=active]:text-white">
                   Spend Over Time
                 </TabsTrigger>
@@ -152,6 +156,10 @@ export default function DashboardPage() {
                   </TabsTrigger>
                 )}
               </TabsList>
+
+              <TabsContent value="alerts" className="mt-4">
+                <AlertsPanel />
+              </TabsContent>
 
               <TabsContent value="spend" className="mt-4 bg-gray-900 border border-gray-800 rounded-lg p-4">
                 <h2 className="text-sm font-medium text-gray-400 mb-4">Daily Spend by Model (USD)</h2>

@@ -1,5 +1,5 @@
 export interface UsageRow {
-  provider: "openai";
+  provider: "openai" | "anthropic" | "google";
   apiKeyId: string;
   apiKeyName: string;
   model: string;
@@ -40,6 +40,7 @@ export interface SpendSummary {
 
 export interface ModelSummary {
   model: string;
+  provider?: "openai" | "anthropic" | "google";
   costUSD: number;
   requests: number;
   inputTokens: number;

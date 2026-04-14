@@ -1,7 +1,7 @@
 "use client";
 import { create } from "zustand";
 import type { UsageRow, SpendSummary, Recommendation, DateRange } from "@/types";
-import { buildSummary } from "@/lib/transform";
+import { buildSummary, transformAnthropic, transformGoogle } from "@/lib/transform";
 
 interface DashboardState {
   rows: UsageRow[];
@@ -35,15 +35,54 @@ export const useDashboard = create<DashboardState>((set, get) => ({
 
     set({ loading: true, error: null });
     try {
-      // Server uses OPENAI_ADMIN_KEY env var — no client key needed
-      const res = await fetch("/api/openai/usage?days=28");
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: res.statusText }));
-        throw new Error(err.error ?? "Failed to fetch usage");
+      const [oaiRes, anthropicRes, googleRes] = await Promise.allSettled([
+        fetch("/api/openai/usage?days=28"),
+        fetch("/api/anthropic/usage"),
+        fetch("/api/google/usage"),
+      ]);
+
+      const allRows: UsageRow[] = [];
+      const warnings: string[] = [];
+
+      if (oaiRes.status === "fulfilled") {
+        if (oaiRes.value.ok) {
+          const data: UsageRow[] = await oaiRes.value.json();
+          allRows.push(...data);
+        } else {
+          const err = await oaiRes.value.json().catch(() => ({ error: oaiRes.value.statusText }));
+          warnings.push(`OpenAI: ${err.error ?? "fetch failed"}`);
+        }
       }
-      const rows: UsageRow[] = await res.json();
-      const summary = buildSummary(rows, parseInt(get().dateRange));
-      set({ rows, summary, loading: false, lastFetched: Date.now() });
+
+      if (anthropicRes.status === "fulfilled") {
+        if (anthropicRes.value.ok) {
+          const data = await anthropicRes.value.json();
+          allRows.push(...transformAnthropic(data.rows ?? []));
+        } else {
+          const err = await anthropicRes.value.json().catch(() => ({ error: anthropicRes.value.statusText }));
+          warnings.push(`Anthropic: ${err.error ?? "fetch failed"}`);
+        }
+      }
+
+      if (googleRes.status === "fulfilled") {
+        if (googleRes.value.ok) {
+          const data = await googleRes.value.json();
+          allRows.push(...transformGoogle(data.rows ?? []));
+        } else {
+          const err = await googleRes.value.json().catch(() => ({ error: googleRes.value.statusText }));
+          warnings.push(`Google: ${err.error ?? "fetch failed"}`);
+        }
+      }
+
+      const days = parseInt(get().dateRange);
+      const summary = buildSummary(allRows, days);
+      set({
+        rows: allRows,
+        summary,
+        loading: false,
+        lastFetched: Date.now(),
+        error: warnings.length > 0 ? `Partial data — ${warnings.join("; ")}` : null,
+      });
     } catch (e: unknown) {
       set({ error: e instanceof Error ? e.message : "Unknown error", loading: false });
     }

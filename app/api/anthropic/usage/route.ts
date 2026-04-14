@@ -54,6 +54,20 @@ function adminHeaders(key: string) {
   };
 }
 
+async function fetchAllKeyNames(adminKey: string): Promise<Record<string, string>> {
+  const names: Record<string, string> = {};
+  let after: string | null = null;
+  do {
+    const url = `${ANTHROPIC_BASE}/v1/organizations/api_keys?limit=100${after ? `&after=${after}` : ""}`;
+    const res = await fetch(url, { headers: adminHeaders(adminKey) });
+    if (!res.ok) break;
+    const data = await res.json() as { data: { id: string; name: string }[]; has_more: boolean; last_id?: string };
+    for (const k of data.data) names[k.id] = k.name;
+    after = data.has_more && data.last_id ? data.last_id : null;
+  } while (after);
+  return names;
+}
+
 function daysAgo(n: number): string {
   const d = new Date();
   d.setUTCDate(d.getUTCDate() - n);
@@ -119,9 +133,22 @@ export async function GET() {
     return NextResponse.json({ error: "ANTHROPIC_ADMIN_KEY not configured" }, { status: 500 });
   }
 
+  // Keys to exclude (Claude Code sessions, subscription-billed use, etc.)
+  // Always excludes the Claude Code onboarding key; add more via env var.
+  const CLAUDE_CODE_ONBOARDING_KEY = "apikey_01KoucGYDmnUxroy7D8wRDH8";
+  const excludedIds = new Set<string>([
+    CLAUDE_CODE_ONBOARDING_KEY,
+    ...(process.env.ANTHROPIC_EXCLUDED_KEY_IDS ?? "")
+      .split(",").map((s) => s.trim()).filter(Boolean),
+  ]);
+
   let usageBuckets: AnthropicUsageBucket[];
+  let keyNames: Record<string, string>;
   try {
-    usageBuckets = await fetchAllUsage(adminKey);
+    [usageBuckets, keyNames] = await Promise.all([
+      fetchAllUsage(adminKey),
+      fetchAllKeyNames(adminKey),
+    ]);
   } catch (e) {
     console.error("[anthropic/usage]", e);
     return NextResponse.json({ error: e instanceof Error ? e.message : "Fetch failed" }, { status: 502 });
@@ -129,7 +156,7 @@ export async function GET() {
 
   // Flatten + calculate cost from token counts
   const aggregated: Record<string, {
-    date: string; model: string; apiKeyId: string; provider: string;
+    date: string; model: string; apiKeyId: string; apiKeyName: string; provider: string;
     inputTokens: number; outputTokens: number; cacheReadTokens: number;
     cacheWriteTokens: number; costUSD: number; serviceTier: string;
   }> = {};
@@ -137,16 +164,31 @@ export async function GET() {
   for (const bucket of usageBuckets) {
     const date = bucket.starting_at.slice(0, 10);
     for (const r of bucket.results) {
+      const keyId = r.api_key_id ?? "unknown";
+      if (excludedIds.has(keyId)) continue; // skip Claude Code / subscription keys
+
+      // Detect Claude Code sessions via cache-read fingerprint:
+      // Claude Code caches millions of tokens (project files) but sends
+      // almost no uncached input. Real app usage always has proportional
+      // uncached tokens even with heavy caching.
+      // Pattern: cache_read > 1M tokens AND uncached_input < 500 tokens on Opus.
+      const isClaudeCodeFingerprint =
+        r.model.toLowerCase().includes("opus") &&
+        r.cache_read_input_tokens > 1_000_000 &&
+        r.uncached_input_tokens < 500;
+      if (isClaudeCodeFingerprint) continue;
+
       const cacheWrite = (r.cache_creation?.ephemeral_5m_input_tokens ?? 0) +
         (r.cache_creation?.ephemeral_1h_input_tokens ?? 0);
       const costUSD = calcCost(r.model, r.uncached_input_tokens, r.cache_read_input_tokens, cacheWrite, r.output_tokens);
 
-      const key = `${date}|${r.model}|${r.api_key_id ?? "unknown"}`;
-      if (!aggregated[key]) {
-        aggregated[key] = {
+      const aggKey = `${date}|${r.model}|${keyId}`;
+      if (!aggregated[aggKey]) {
+        aggregated[aggKey] = {
           date,
           model: r.model,
-          apiKeyId: r.api_key_id ?? "unknown",
+          apiKeyId: keyId,
+          apiKeyName: keyNames[keyId] ?? keyId,
           provider: "anthropic",
           inputTokens: r.uncached_input_tokens,
           outputTokens: r.output_tokens,
@@ -156,11 +198,11 @@ export async function GET() {
           serviceTier: r.service_tier,
         };
       } else {
-        aggregated[key].inputTokens     += r.uncached_input_tokens;
-        aggregated[key].outputTokens    += r.output_tokens;
-        aggregated[key].cacheReadTokens += r.cache_read_input_tokens;
-        aggregated[key].cacheWriteTokens+= cacheWrite;
-        aggregated[key].costUSD         += costUSD;
+        aggregated[aggKey].inputTokens     += r.uncached_input_tokens;
+        aggregated[aggKey].outputTokens    += r.output_tokens;
+        aggregated[aggKey].cacheReadTokens += r.cache_read_input_tokens;
+        aggregated[aggKey].cacheWriteTokens+= cacheWrite;
+        aggregated[aggKey].costUSD         += costUSD;
       }
     }
   }
@@ -181,6 +223,7 @@ export async function GET() {
     summary: {
       totalCostUSD: rows.reduce((s, r) => s + r.costUSD, 0),
       byModel,
+      excludedKeyIds: Array.from(excludedIds),
     },
     fetchedAt: new Date().toISOString(),
   });

@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "AICostCentral Key Manager",
+  "version": "1.0.0",
+  "description": "Manage AI provider API keys with naming conventions, renewal tracking, and anomaly alerts",
+  "permissions": ["storage", "notifications", "alarms"],
+  "background": {
+    "service_worker": "service-worker.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "48": "icon-48.svg"
+    }
+  },
+  "icons": {
+    "48": "icon-48.svg",
+    "128": "icon-128.svg"
+  }
+}

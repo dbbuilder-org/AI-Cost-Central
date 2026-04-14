@@ -39,3 +39,14 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# chrome extension build artifacts
+/chrome-extension/node_modules
+/chrome-extension/dist
+/chrome-extension/.vite
+
+# mobile build artifacts
+/mobile/node_modules
+/mobile/.expo
+/mobile/dist
+keys/

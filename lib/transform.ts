@@ -98,6 +98,73 @@ export function transformOpenAI(raw: OAIRawData): UsageRow[] {
   return Array.from(rowMap.values()).sort((a, b) => a.date.localeCompare(b.date));
 }
 
+// ── Anthropic transform ───────────────────────────────────────────────────────
+
+interface AnthropicRow {
+  date: string;
+  model: string;
+  apiKeyId: string;
+  apiKeyName?: string;
+  provider: "anthropic";
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  costUSD: number;
+}
+
+export function transformAnthropic(rows: AnthropicRow[]): UsageRow[] {
+  return rows.map((r) => {
+    const totalInput = r.inputTokens + r.cacheReadTokens;
+    const displayName = r.apiKeyName
+      ? `Anthropic · ${r.apiKeyName}`
+      : r.apiKeyId === "unknown"
+      ? "Anthropic (unattributed)"
+      : `Anthropic · …${r.apiKeyId.slice(-8)}`;
+    return {
+      provider: "anthropic" as const,
+      apiKeyId: r.apiKeyId,
+      apiKeyName: displayName,
+      model: r.model,
+      date: r.date,
+      inputTokens: totalInput,
+      outputTokens: r.outputTokens,
+      requests: 0,
+      costUSD: r.costUSD,
+      costPer1KInput: totalInput > 0 ? (r.costUSD / totalInput) * 1000 : 0,
+      costPer1KOutput: r.outputTokens > 0 ? (r.costUSD / r.outputTokens) * 1000 : 0,
+    };
+  });
+}
+
+// ── Google / Gemini transform ─────────────────────────────────────────────────
+
+interface GoogleRow {
+  date: string;
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  requests: number;
+  costUSD: number;
+  provider: "google";
+}
+
+export function transformGoogle(rows: GoogleRow[]): UsageRow[] {
+  return rows.map((r) => ({
+    provider: "google" as const,
+    apiKeyId: "google",
+    apiKeyName: "Google (Gemini)",
+    model: r.model,
+    date: r.date,
+    inputTokens: r.inputTokens,
+    outputTokens: r.outputTokens,
+    requests: r.requests,
+    costUSD: r.costUSD,
+    costPer1KInput: r.inputTokens > 0 ? (r.costUSD / r.inputTokens) * 1000 : 0,
+    costPer1KOutput: r.outputTokens > 0 ? (r.costUSD / r.outputTokens) * 1000 : 0,
+  }));
+}
+
 // Model tiers: frontier models used for tiny requests are overkill candidates
 const FRONTIER_MODELS = ["gpt-4o", "gpt-4.1", "gpt-4-turbo", "o1", "o3", "gpt-5"];
 const CHEAP_MODELS = ["gpt-4o-mini", "gpt-3.5-turbo", "gpt-4o-mini-2024", "gpt-4.1-mini"];
@@ -133,7 +200,7 @@ export function buildSummary(rows: UsageRow[], days: number): SpendSummary {
   const modelMap = new Map<string, Omit<ModelSummary, "avgInputTokens"|"avgOutputTokens"|"avgTotalTokens"|"inputOutputRatio"|"costPerRequest"|"overkillSignal">>();
   for (const r of filtered) {
     const m = modelMap.get(r.model) ?? {
-      model: r.model, costUSD: 0, requests: 0,
+      model: r.model, provider: r.provider, costUSD: 0, requests: 0,
       inputTokens: 0, outputTokens: 0, costPer1KInput: 0, costPer1KOutput: 0,
     };
     m.costUSD += r.costUSD;

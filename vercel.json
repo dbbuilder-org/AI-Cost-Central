@@ -3,6 +3,18 @@
     {
       "path": "/api/cron/refresh",
       "schedule": "0 2 * * *"
+    },
+    {
+      "path": "/api/cron/brief-daily",
+      "schedule": "0 7 * * *"
+    },
+    {
+      "path": "/api/cron/alerts",
+      "schedule": "0 8 * * *"
+    },
+    {
+      "path": "/api/cron/brief-weekly",
+      "schedule": "0 9 * * 1"
     }
   ]
 }
