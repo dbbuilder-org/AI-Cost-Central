@@ -6,9 +6,12 @@
 import { transformAnthropic, transformGoogle } from "@/lib/transform";
 import type { UsageRow } from "@/types";
 
-const INTERNAL_BASE = process.env.VERCEL_URL
-  ? `https://${process.env.VERCEL_URL}`
-  : "http://localhost:3000";
+// INTERNAL_API_BASE overrides VERCEL_URL — set it to the production alias
+// (e.g. https://ai-cost-central.vercel.app) so internal calls bypass Vercel
+// deployment-preview SSO protection.
+const INTERNAL_BASE =
+  process.env.INTERNAL_API_BASE ??
+  (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000");
 
 export async function fetchAllUsageRows(): Promise<UsageRow[]> {
   const [oaiRes, anthropicRes, googleRes] = await Promise.allSettled([
