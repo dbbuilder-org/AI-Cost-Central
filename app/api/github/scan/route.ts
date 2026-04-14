@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { requireAuth } from "@/lib/auth";
+import { resolveProviderKey } from "@/lib/server/resolveKey";
 
 const GITHUB_API = "https://api.github.com";
 
@@ -78,13 +80,24 @@ function findModelHits(content: string, filePath: string): Omit<CodeHit, "file">
 
 export async function POST(req: NextRequest) {
   const { owner, repo, pathFilter } = await req.json();
-  const token = process.env.GITHUB_TOKEN;
 
   if (!owner || !repo) {
     return NextResponse.json({ error: "owner and repo required" }, { status: 400 });
   }
-  if (!token) {
-    return NextResponse.json({ error: "GITHUB_TOKEN not configured" }, { status: 500 });
+
+  // Accept pre-resolved token from internal server-to-server calls (e.g. /api/analyze)
+  const internalToken = req.headers.get("x-internal-github-token");
+  let token: string;
+  if (internalToken) {
+    token = internalToken;
+  } else {
+    try {
+      const { orgId } = await requireAuth();
+      token = await resolveProviderKey(orgId, "github");
+    } catch (err) {
+      if (err instanceof Response) return err;
+      return NextResponse.json({ error: err instanceof Error ? err.message : "No GitHub token configured" }, { status: 404 });
+    }
   }
 
   try {

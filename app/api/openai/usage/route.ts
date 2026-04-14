@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { transformOpenAI, type OAIRawData } from "@/lib/transform";
+import { requireAuth } from "@/lib/auth";
+import { resolveProviderKey } from "@/lib/server/resolveKey";
 
 const BASE = "https://api.openai.com/v1/organization";
 
@@ -63,9 +65,14 @@ async function fetchAllProjectKeys(token: string): Promise<Record<string, string
 }
 
 export async function GET(req: NextRequest) {
-  // Server env var takes precedence; client header is fallback for local dev override
-  const key = process.env.OPENAI_ADMIN_KEY ?? req.headers.get("x-openai-admin-key");
-  if (!key) return NextResponse.json({ error: "No API key provided" }, { status: 401 });
+  let key: string;
+  try {
+    const { orgId } = await requireAuth();
+    key = await resolveProviderKey(orgId, "openai");
+  } catch (err) {
+    if (err instanceof Response) return err;
+    return NextResponse.json({ error: err instanceof Error ? err.message : "No OpenAI key configured" }, { status: 404 });
+  }
 
   const days = parseInt(req.nextUrl.searchParams.get("days") ?? "28");
   const now = Math.floor(Date.now() / 1000);

@@ -13,13 +13,7 @@ import { db, schema } from "@/lib/db";
 import { and, eq } from "drizzle-orm";
 import { decryptApiKey } from "@/lib/crypto";
 
-export type Provider = "openai" | "anthropic" | "google";
-
-const ENV_FALLBACKS: Record<Provider, string | undefined> = {
-  openai: process.env.OPENAI_ADMIN_KEY,
-  anthropic: process.env.ANTHROPIC_ADMIN_KEY,
-  google: process.env.GOOGLE_SERVICE_ACCOUNT_JSON,
-};
+export type Provider = "openai" | "anthropic" | "google" | "github";
 
 /**
  * Returns the plaintext API key for the given provider within an org.
@@ -49,10 +43,6 @@ export async function resolveProviderKey(
       return decryptApiKey(key.encryptedValue, org.encryptedDek);
     }
   }
-
-  // 2. Env var fallback (legacy single-tenant / CI)
-  const fallback = ENV_FALLBACKS[provider];
-  if (fallback) return fallback;
 
   throw new Error(
     `No active API key found for provider "${provider}" in org "${orgId}". ` +

@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import type { SpendSummary, Recommendation } from "@/types";
+import { requireAuth } from "@/lib/auth";
+import { resolveProviderKey } from "@/lib/server/resolveKey";
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -113,8 +115,14 @@ interface RepoScanResult {
   hits: CodeHit[];
 }
 
-async function fetchRepoScans(): Promise<RepoScanResult[]> {
-  if (!process.env.GITHUB_TOKEN) return [];
+async function fetchRepoScans(orgId: string): Promise<RepoScanResult[]> {
+  // Resolve GitHub token from DB — silently skip if none configured
+  let githubToken: string;
+  try {
+    githubToken = await resolveProviderKey(orgId, "github");
+  } catch {
+    return [];
+  }
   try {
     // Fetch repo links from KV
     let links: Array<{ apiKeyName: string; githubOwner: string; githubRepo: string; pathFilter: string }> = [];
@@ -136,7 +144,7 @@ async function fetchRepoScans(): Promise<RepoScanResult[]> {
       if (!scan) {
         const res = await fetch(`${process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000"}/api/github/scan`, {
           method: "POST",
-          headers: { "content-type": "application/json" },
+          headers: { "content-type": "application/json", "x-internal-github-token": githubToken },
           body: JSON.stringify({ owner: link.githubOwner, repo: link.githubRepo, pathFilter: link.pathFilter }),
         });
         if (res.ok) {
@@ -175,10 +183,18 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "ANTHROPIC_API_KEY not configured" }, { status: 500 });
   }
 
+  let orgId: string;
+  try {
+    ({ orgId } = await requireAuth());
+  } catch (err) {
+    if (err instanceof Response) return err;
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   const summary: SpendSummary = await req.json();
 
   // Fetch repo scan data in parallel (best-effort, won't block if fails)
-  const repoScans = await fetchRepoScans().catch(() => [] as RepoScanResult[]);
+  const repoScans = await fetchRepoScans(orgId).catch(() => [] as RepoScanResult[]);
   const repoContext = buildRepoContext(repoScans);
 
   try {

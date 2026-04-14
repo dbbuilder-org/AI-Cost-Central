@@ -13,6 +13,8 @@
  */
 import { NextResponse } from "next/server";
 import { GoogleAuth } from "google-auth-library";
+import { requireAuth } from "@/lib/auth";
+import { resolveProviderKey } from "@/lib/server/resolveKey";
 
 // Pricing catalog (USD per 1M tokens, Apr 2026)
 // Veo/Imagen tracked by request count — not per-token
@@ -143,16 +145,18 @@ async function queryMonitoring(
 }
 
 export async function GET() {
-  const saJson = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
-  if (!saJson) {
-    return NextResponse.json({ error: "GOOGLE_SERVICE_ACCOUNT_JSON not configured" }, { status: 500 });
-  }
-
   let sa: { project_id: string };
   try {
+    const { orgId } = await requireAuth();
+    const saJson = await resolveProviderKey(orgId, "google");
     sa = JSON.parse(saJson);
-  } catch {
-    return NextResponse.json({ error: "GOOGLE_SERVICE_ACCOUNT_JSON is not valid JSON" }, { status: 500 });
+  } catch (err) {
+    if (err instanceof Response) return err;
+    const msg = err instanceof Error ? err.message : "No Google key configured";
+    if (msg.includes("not valid JSON") || msg.includes("JSON")) {
+      return NextResponse.json({ error: "Google service account JSON is invalid" }, { status: 500 });
+    }
+    return NextResponse.json({ error: msg }, { status: 404 });
   }
 
   const projectId = sa.project_id;

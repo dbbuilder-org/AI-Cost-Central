@@ -9,6 +9,8 @@
  * double-counts amounts across API keys, producing wildly inflated totals.
  */
 import { NextResponse } from "next/server";
+import { requireAuth } from "@/lib/auth";
+import { resolveProviderKey } from "@/lib/server/resolveKey";
 
 const ANTHROPIC_BASE = "https://api.anthropic.com";
 const ANTHROPIC_VERSION = "2023-06-01";
@@ -128,9 +130,13 @@ async function fetchAllUsage(adminKey: string): Promise<AnthropicUsageBucket[]> 
 }
 
 export async function GET() {
-  const adminKey = process.env.ANTHROPIC_ADMIN_KEY;
-  if (!adminKey) {
-    return NextResponse.json({ error: "ANTHROPIC_ADMIN_KEY not configured" }, { status: 500 });
+  let adminKey: string;
+  try {
+    const { orgId } = await requireAuth();
+    adminKey = await resolveProviderKey(orgId, "anthropic");
+  } catch (err) {
+    if (err instanceof Response) return err;
+    return NextResponse.json({ error: err instanceof Error ? err.message : "No Anthropic key configured" }, { status: 404 });
   }
 
   // Keys to exclude (Claude Code sessions, subscription-billed use, etc.)
