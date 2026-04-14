@@ -65,7 +65,7 @@ export default async function AuditPage() {
                       <span className="text-xs text-gray-500">{entry.resourceType}</span>
                     )}
                   </div>
-                  {entry.metadata && Object.keys(entry.metadata as object).length > 0 && (
+                  {!!entry.metadata && Object.keys(entry.metadata as Record<string, unknown>).length > 0 && (
                     <p className="text-xs text-gray-500 mt-0.5 font-mono">
                       {JSON.stringify(entry.metadata)}
                     </p>

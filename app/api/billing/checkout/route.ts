@@ -11,7 +11,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "priceId is required" }, { status: 400 });
     }
 
-    const baseUrl = process.env.DASHBOARD_URL ?? `https://${process.env.VERCEL_URL}` ?? "http://localhost:3000";
+    const baseUrl = process.env.DASHBOARD_URL ?? (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000");
     const url = await createCheckoutSession({
       orgId,
       priceId,

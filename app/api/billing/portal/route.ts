@@ -5,7 +5,7 @@ import { createPortalSession } from "@/lib/billing";
 export async function POST() {
   try {
     const { orgId } = await requireAuth();
-    const baseUrl = process.env.DASHBOARD_URL ?? `https://${process.env.VERCEL_URL}` ?? "http://localhost:3000";
+    const baseUrl = process.env.DASHBOARD_URL ?? (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000");
     const url = await createPortalSession({ orgId, returnUrl: `${baseUrl}/billing` });
     return NextResponse.json({ url });
   } catch (err) {
