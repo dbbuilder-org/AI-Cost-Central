@@ -1,0 +1,206 @@
+/**
+ * Drizzle ORM schema for AICostCentral SaaS
+ * All tables include org_id for multi-tenant isolation.
+ * Every query MUST filter by org_id from Clerk auth().
+ */
+
+import {
+  pgTable,
+  text,
+  uuid,
+  boolean,
+  integer,
+  bigint,
+  numeric,
+  timestamp,
+  jsonb,
+  date,
+  uniqueIndex,
+  index,
+} from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+
+// ── Organizations ─────────────────────────────────────────────────────────────
+// PK is the Clerk org ID string — eliminates join on every auth check.
+
+export const organizations = pgTable("organizations", {
+  id: text("id").primaryKey(),                         // Clerk org ID (org_xxxx)
+  name: text("name").notNull(),
+  slug: text("slug").notNull(),
+  plan: text("plan").notNull().default("free"),        // free|growth|business|enterprise
+  stripeCustomerId: text("stripe_customer_id").unique(),
+  stripeSubscriptionId: text("stripe_subscription_id").unique(),
+  stripePriceId: text("stripe_price_id"),
+  subscriptionStatus: text("subscription_status").default("inactive"),
+  trialEndsAt: timestamp("trial_ends_at", { withTimezone: true }),
+  encryptedDek: text("encrypted_dek").notNull(),       // AES-256-GCM(DEK, MASTER_KEY)
+  settings: jsonb("settings").default({}),
+  onboarded: boolean("onboarded").notNull().default(false),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("organizations_slug_idx").on(t.slug),
+]);
+
+// ── Org Members ───────────────────────────────────────────────────────────────
+
+export const orgMembers = pgTable("org_members", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: text("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  clerkUserId: text("clerk_user_id").notNull(),        // user_xxxx from Clerk
+  email: text("email").notNull(),
+  fullName: text("full_name"),
+  role: text("role").notNull().default("viewer"),      // owner|admin|viewer
+  status: text("status").notNull().default("active"),  // active|deactivated
+  invitedBy: uuid("invited_by"),                       // References orgMembers.id
+  joinedAt: timestamp("joined_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("org_members_org_user_idx").on(t.orgId, t.clerkUserId),
+]);
+
+// ── Divisions ─────────────────────────────────────────────────────────────────
+
+export const divisions = pgTable("divisions", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: text("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  description: text("description"),
+  parentId: uuid("parent_id"),                         // Self-ref for nested teams
+  budgetUsd: numeric("budget_usd", { precision: 12, scale: 4 }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// ── API Keys ──────────────────────────────────────────────────────────────────
+
+export const apiKeys = pgTable("api_keys", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: text("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  divisionId: uuid("division_id").references(() => divisions.id),
+  provider: text("provider").notNull(),                // openai|anthropic|google
+  keyType: text("key_type").notNull().default("admin"),// admin|project
+  displayName: text("display_name").notNull(),
+  encryptedValue: text("encrypted_value").notNull(),   // AES-256-GCM(plaintext, DEK)
+  hint: text("hint"),                                  // Last 4 chars for identification
+  isActive: boolean("is_active").notNull().default(true),
+  description: text("description"),
+  tags: text("tags").array().default(sql`'{}'`),
+  budgetUsd: numeric("budget_usd", { precision: 12, scale: 4 }),
+  lastTestedAt: timestamp("last_tested_at", { withTimezone: true }),
+  lastTestOk: boolean("last_test_ok"),
+  createdBy: uuid("created_by"),                       // References orgMembers.id
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index("api_keys_org_idx").on(t.orgId),
+  index("api_keys_org_provider_idx").on(t.orgId, t.provider),
+]);
+
+// ── Projects ──────────────────────────────────────────────────────────────────
+
+export const projects = pgTable("projects", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: text("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  divisionId: uuid("division_id").references(() => divisions.id),
+  name: text("name").notNull(),
+  description: text("description"),
+  tags: text("tags").array().default(sql`'{}'`),
+  budgetUsd: numeric("budget_usd", { precision: 12, scale: 4 }),
+  color: text("color"),                                // Hex color for UI
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index("projects_org_idx").on(t.orgId),
+]);
+
+// ── API Key ↔ Project (many-to-many) ─────────────────────────────────────────
+
+export const apiKeyProjects = pgTable("api_key_projects", {
+  apiKeyId: uuid("api_key_id").notNull().references(() => apiKeys.id, { onDelete: "cascade" }),
+  projectId: uuid("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
+}, (t) => [
+  uniqueIndex("api_key_projects_pk").on(t.apiKeyId, t.projectId),
+]);
+
+// ── Usage Rows ────────────────────────────────────────────────────────────────
+// Persistent usage cache replacing Vercel KV.
+// UNIQUE on (org_id, provider, provider_key_id, model, date) → idempotent upserts.
+
+export const usageRows = pgTable("usage_rows", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: text("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  apiKeyId: uuid("api_key_id").references(() => apiKeys.id, { onDelete: "set null" }),
+  provider: text("provider").notNull(),
+  providerKeyId: text("provider_key_id").notNull(),    // Provider's own key ID string
+  model: text("model").notNull(),
+  date: date("date").notNull(),
+  inputTokens: bigint("input_tokens", { mode: "number" }).notNull().default(0),
+  outputTokens: bigint("output_tokens", { mode: "number" }).notNull().default(0),
+  requests: integer("requests").notNull().default(0),
+  costUsd: numeric("cost_usd", { precision: 12, scale: 6 }).notNull().default("0"),
+  fetchedAt: timestamp("fetched_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("usage_rows_unique_idx").on(t.orgId, t.provider, t.providerKeyId, t.model, t.date),
+  index("usage_rows_org_date_idx").on(t.orgId, t.date),
+  index("usage_rows_org_key_idx").on(t.orgId, t.apiKeyId),
+]);
+
+// ── Annotations ───────────────────────────────────────────────────────────────
+
+export const annotations = pgTable("annotations", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: text("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  entityType: text("entity_type").notNull(),           // api_key|project|division|usage_date
+  entityId: text("entity_id").notNull(),               // UUID or date string
+  authorId: uuid("author_id"),                         // References orgMembers.id
+  content: text("content").notNull(),
+  tags: text("tags").array().default(sql`'{}'`),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index("annotations_entity_idx").on(t.orgId, t.entityType, t.entityId),
+]);
+
+// ── Invitations ───────────────────────────────────────────────────────────────
+
+export const invitations = pgTable("invitations", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: text("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  email: text("email").notNull(),
+  role: text("role").notNull().default("viewer"),
+  invitedBy: uuid("invited_by"),                       // References orgMembers.id
+  clerkInvitationId: text("clerk_invitation_id"),
+  status: text("status").notNull().default("pending"), // pending|accepted|expired
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull()
+    .default(sql`NOW() + INTERVAL '7 days'`),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("invitations_org_email_idx").on(t.orgId, t.email),
+]);
+
+// ── Audit Log ─────────────────────────────────────────────────────────────────
+
+export const auditLog = pgTable("audit_log", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: text("org_id").notNull(),
+  actorId: uuid("actor_id"),                           // References orgMembers.id
+  action: text("action").notNull(),                    // key.created|member.invited|etc.
+  resourceType: text("resource_type"),
+  resourceId: text("resource_id"),
+  metadata: jsonb("metadata").default({}),
+  ipAddress: text("ip_address"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index("audit_log_org_created_idx").on(t.orgId, t.createdAt),
+]);
+
+// ── Type exports ──────────────────────────────────────────────────────────────
+
+export type Organization = typeof organizations.$inferSelect;
+export type NewOrganization = typeof organizations.$inferInsert;
+export type OrgMember = typeof orgMembers.$inferSelect;
+export type NewOrgMember = typeof orgMembers.$inferInsert;
+export type Division = typeof divisions.$inferSelect;
+export type ApiKey = typeof apiKeys.$inferSelect;
+export type Project = typeof projects.$inferSelect;
+export type UsageRow = typeof usageRows.$inferSelect;
+export type Annotation = typeof annotations.$inferSelect;
+export type Invitation = typeof invitations.$inferSelect;
+export type AuditLogEntry = typeof auditLog.$inferSelect;
