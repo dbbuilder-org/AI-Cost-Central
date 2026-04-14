@@ -61,9 +61,19 @@ export function computeDailyData(rows: UsageRow[]): DailyBriefData {
     return emptyDailyData();
   }
 
-  // Yesterday = most recent complete date in data
-  const yesterday = allDates[allDates.length - 1];
-  const dayBefore = allDates.length > 1 ? allDates[allDates.length - 2] : null;
+  // "Yesterday" = the last *complete* day.
+  // If the most recent date in the dataset is today (UTC), it has partial data
+  // (the day isn't over yet), so step back to the prior date.
+  const todayUTC = new Date().toISOString().slice(0, 10);
+  const mostRecent = allDates[allDates.length - 1];
+  const yesterday = mostRecent === todayUTC && allDates.length > 1
+    ? allDates[allDates.length - 2]
+    : mostRecent;
+  const dayBefore = allDates.length > 2 && mostRecent === todayUTC
+    ? allDates[allDates.length - 3]
+    : allDates.length > 1
+    ? allDates[allDates.length - 2]
+    : null;
   const trailing7Start = allDates[Math.max(0, allDates.length - 7)];
 
   const yesterdayRows = rows.filter((r) => r.date === yesterday);

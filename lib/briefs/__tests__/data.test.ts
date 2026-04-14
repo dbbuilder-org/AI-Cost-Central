@@ -146,15 +146,17 @@ describe("computeDailyData", () => {
     expect(result.trailing7d.byDay.length).toBeGreaterThan(0);
   });
 
-  it("does not include tomorrow's rows in yesterday totals", () => {
+  it("skips today's partial data and reports on last complete day", () => {
+    // 2026-04-14 is today (UTC) when tests run — it has partial data
+    // 2026-04-13 is the last complete day and should be the report date
     const rows = [
       makeRow({ date: "2026-04-13", costUSD: 5.0 }),
-      makeRow({ date: "2026-04-14", costUSD: 999.0 }), // tomorrow, should be "today"
+      makeRow({ date: "2026-04-14", costUSD: 999.0 }), // today — partial, skip
     ];
     const result = computeDailyData(rows);
-    // Most recent date = 2026-04-14, yesterday = 2026-04-14
-    expect(result.reportDate).toBe("2026-04-14");
-    expect(result.yesterday.totalCostUSD).toBeCloseTo(999.0);
+    // Should report on 2026-04-13 (last complete day), not today's partial data
+    expect(result.reportDate).toBe("2026-04-13");
+    expect(result.yesterday.totalCostUSD).toBeCloseTo(5.0);
   });
 });
 
