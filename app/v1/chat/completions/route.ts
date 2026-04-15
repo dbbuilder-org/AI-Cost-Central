@@ -102,7 +102,7 @@ async function logRequest(data: {
   if (process.env.NODE_ENV === "development") {
     console.log("[SmartRouter]", JSON.stringify(data));
   }
-  // TODO Phase 2: await db.insert(requestLogs).values(data)
+  // see dbbuilder-org/AI-Cost-Central#1 for Phase 2 DB persistence
 }
 
 export async function POST(req: NextRequest) {

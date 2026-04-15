@@ -144,10 +144,21 @@ async function queryMonitoring(
   return data.timeSeries ?? [];
 }
 
-export async function GET() {
+async function resolveOrgId(req: Request): Promise<string> {
+  const headers = new Headers((req as { headers: Headers }).headers);
+  const cronSecret = headers.get("x-cron-secret");
+  const cronOrgId = headers.get("x-org-id");
+  if (cronSecret && process.env.CRON_SECRET && cronSecret === process.env.CRON_SECRET && cronOrgId) {
+    return cronOrgId;
+  }
+  const { orgId } = await requireAuth();
+  return orgId;
+}
+
+export async function GET(req: Request) {
   let sa: { project_id: string };
   try {
-    const { orgId } = await requireAuth();
+    const orgId = await resolveOrgId(req);
     const saJson = await resolveProviderKey(orgId, "google");
     sa = JSON.parse(saJson);
   } catch (err) {
