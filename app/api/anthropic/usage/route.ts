@@ -11,6 +11,8 @@
 import { NextResponse } from "next/server";
 import { requireAuth } from "@/lib/auth";
 import { resolveProviderKey } from "@/lib/server/resolveKey";
+import { db, schema } from "@/lib/db";
+import { eq } from "drizzle-orm";
 
 const ANTHROPIC_BASE = "https://api.anthropic.com";
 const ANTHROPIC_VERSION = "2023-06-01";
@@ -142,21 +144,28 @@ async function resolveOrgId(req: Request): Promise<string> {
 
 export async function GET(req: Request) {
   let adminKey: string;
+  let orgId: string;
   try {
-    const orgId = await resolveOrgId(req);
+    orgId = await resolveOrgId(req);
     adminKey = await resolveProviderKey(orgId, "anthropic");
   } catch (err) {
     if (err instanceof Response) return err;
     return NextResponse.json({ error: err instanceof Error ? err.message : "No Anthropic key configured" }, { status: 404 });
   }
 
-  // Keys to exclude (Claude Code sessions, subscription-billed use, etc.)
-  // Always excludes the Claude Code onboarding key; add more via env var.
+  // Keys to exclude: Claude Code onboarding key + env var overrides + per-org settings
   const CLAUDE_CODE_ONBOARDING_KEY = "apikey_01KoucGYDmnUxroy7D8wRDH8";
+  const orgSettings = await db.query.organizations.findFirst({
+    where: eq(schema.organizations.id, orgId),
+    columns: { settings: true },
+  }).catch(() => null);
+  const orgExcluded = ((orgSettings?.settings as Record<string, unknown> | null)?.excludedKeyIds as string[] | undefined) ?? [];
+
   const excludedIds = new Set<string>([
     CLAUDE_CODE_ONBOARDING_KEY,
     ...(process.env.ANTHROPIC_EXCLUDED_KEY_IDS ?? "")
       .split(",").map((s) => s.trim()).filter(Boolean),
+    ...orgExcluded,
   ]);
 
   let usageBuckets: AnthropicUsageBucket[];

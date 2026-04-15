@@ -58,10 +58,31 @@ async function fetchRowsForOrg(orgId: string): Promise<UsageRow[]> {
   return rows;
 }
 
+// Process at most this many orgs concurrently to avoid hammering provider APIs
+const CONCURRENCY = 4;
+
+async function runWithConcurrencyLimit<T>(
+  items: string[],
+  fn: (item: string) => Promise<T>,
+  limit: number
+): Promise<T[]> {
+  const results: T[] = [];
+  for (let i = 0; i < items.length; i += limit) {
+    const batch = items.slice(i, i + limit);
+    const batchResults = await Promise.all(batch.map(fn));
+    results.push(...batchResults);
+  }
+  return results;
+}
+
 export async function fetchAllUsageRows(): Promise<UsageRow[]> {
   const orgIds = await getOrgsWithActiveKeys();
   if (orgIds.length === 0) return [];
 
-  const perOrg = await Promise.all(orgIds.map((id) => fetchRowsForOrg(id).catch(() => [] as UsageRow[])));
+  const perOrg = await runWithConcurrencyLimit(
+    orgIds,
+    (id) => fetchRowsForOrg(id).catch(() => [] as UsageRow[]),
+    CONCURRENCY
+  );
   return perOrg.flat();
 }
