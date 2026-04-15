@@ -64,10 +64,20 @@ async function fetchAllProjectKeys(token: string): Promise<Record<string, string
   return keyNames;
 }
 
+async function resolveOrgId(req: NextRequest): Promise<string> {
+  const cronSecret = req.headers.get("x-cron-secret");
+  const cronOrgId = req.headers.get("x-org-id");
+  if (cronSecret && process.env.CRON_SECRET && cronSecret === process.env.CRON_SECRET && cronOrgId) {
+    return cronOrgId;
+  }
+  const { orgId } = await requireAuth();
+  return orgId;
+}
+
 export async function GET(req: NextRequest) {
   let key: string;
   try {
-    const { orgId } = await requireAuth();
+    const orgId = await resolveOrgId(req);
     key = await resolveProviderKey(orgId, "openai");
   } catch (err) {
     if (err instanceof Response) return err;
