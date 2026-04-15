@@ -147,15 +147,16 @@ describe("computeDailyData", () => {
   });
 
   it("skips today's partial data and reports on last complete day", () => {
-    // 2026-04-14 is today (UTC) when tests run — it has partial data
-    // 2026-04-13 is the last complete day and should be the report date
+    const todayUTC = new Date().toISOString().slice(0, 10);
+    const d = new Date();
+    d.setUTCDate(d.getUTCDate() - 1);
+    const yesterdayUTC = d.toISOString().slice(0, 10);
     const rows = [
-      makeRow({ date: "2026-04-13", costUSD: 5.0 }),
-      makeRow({ date: "2026-04-14", costUSD: 999.0 }), // today — partial, skip
+      makeRow({ date: yesterdayUTC, costUSD: 5.0 }),
+      makeRow({ date: todayUTC, costUSD: 999.0 }), // today — partial, skip
     ];
     const result = computeDailyData(rows);
-    // Should report on 2026-04-13 (last complete day), not today's partial data
-    expect(result.reportDate).toBe("2026-04-13");
+    expect(result.reportDate).toBe(yesterdayUTC);
     expect(result.yesterday.totalCostUSD).toBeCloseTo(5.0);
   });
 });
