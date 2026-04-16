@@ -13,6 +13,7 @@ import { CodeAttributionCard } from "@/components/dashboard/CodeAttributionCard"
 import { LatencyStatsCard } from "@/components/dashboard/LatencyStatsCard";
 import { ABExperimentsCard } from "@/components/dashboard/ABExperimentsCard";
 import { OpenRouterCompareCard } from "@/components/dashboard/OpenRouterCompareCard";
+import { SpendForecastCard } from "@/components/dashboard/SpendForecastCard";
 import { SpendOverTime } from "@/components/charts/SpendOverTime";
 import { CostByModel } from "@/components/charts/CostByModel";
 import { CostByKey } from "@/components/charts/CostByKey";
@@ -163,6 +164,9 @@ export default function DashboardPage() {
               <TabsTrigger value="vs-openrouter" className="data-[state=active]:bg-gray-800 text-gray-400 data-[state=active]:text-white">
                 vs OpenRouter
               </TabsTrigger>
+              <TabsTrigger value="forecast" className="data-[state=active]:bg-gray-800 text-gray-400 data-[state=active]:text-white">
+                Forecast
+              </TabsTrigger>
               {recommendations.length > 0 && (
                 <TabsTrigger value="recommendations" className="data-[state=active]:bg-gray-800 text-gray-400 data-[state=active]:text-white">
                   Recommendations
@@ -221,6 +225,10 @@ export default function DashboardPage() {
 
             <TabsContent value="vs-openrouter" className="mt-4">
               <OpenRouterCompareCard />
+            </TabsContent>
+
+            <TabsContent value="forecast" className="mt-4">
+              <SpendForecastCard byDay={summary.byDay} />
             </TabsContent>
 
             {recommendations.length > 0 && (

@@ -39,13 +39,19 @@ describe("computeForecast", () => {
     expect(result.projectedDailyCost).toBeGreaterThanOrEqual(0);
   });
 
-  it("projected month total is positive for flat data", () => {
+  it("projected month total = mtdUsd + remaining days × daily rate for flat data", () => {
+    // Points Apr 1–7 ($50/day), reference Apr 8
     const points = makePoints([50, 50, 50, 50, 50, 50, 50]);
     const result = computeForecast(points, "2026-04-08");
-    // April 8 → 23 days remaining (Apr 8–30 = 23 days)
-    // $50/day × 23 ≈ $1150
+    // mtdUsd = 7 × $50 = $350 (Apr 1–7 in the "2026-04" month prefix)
+    // daysRemaining = 30 - 8 = 22 days (Apr 9–30)
+    // projectedMonthTotal ≈ $350 + 22 × $50 = $1450
     expect(result.projectedMonthTotal).toBeGreaterThan(0);
-    expect(result.projectedMonthTotal).toBeCloseTo(50 * 23, 0);
+    expect(result.mtdUsd).toBeCloseTo(350, 0);
+    expect(result.daysRemaining).toBe(22);
+    expect(result.forecastDays).toHaveLength(22);
+    expect(result.forecastDays[0].date).toBe("2026-04-09");
+    expect(result.forecastDays[0].projectedUsd).toBeCloseTo(50, 0);
   });
 
   it("noisy data has R² < 0.5", () => {
