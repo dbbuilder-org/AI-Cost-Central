@@ -16,6 +16,7 @@ import { forwardWithFallback, type FallbackAttempt } from "@/lib/router/fallback
 import { assignExperiment } from "@/lib/router/experiment";
 import { getLatencyStats } from "@/lib/router/latency";
 import { normalizeModelName } from "@/lib/router/normalize";
+import { pickKey } from "@/lib/router/keyPool";
 import { db, schema } from "@/lib/db";
 import { eq, and } from "drizzle-orm";
 import { randomUUID } from "crypto";
@@ -260,20 +261,29 @@ export async function POST(req: NextRequest) {
   const cachedMessages = injectAnthropicCacheControl(messages, providerToUse, cachingEnabled);
 
   // ── Build fallback chain ──
+  // pickKey() round-robins across all active DB keys for the provider;
+  // falls back to env var if no DB keys are found.
+  const primaryKey = ctx.passthrough
+    ? ctx.providerKey
+    : await pickKey(ctx.orgId, providerToUse);
+
   const primaryAttempt: FallbackAttempt = {
     provider: providerToUse,
     providerUrl: PROVIDER_URLS[providerToUse] ?? PROVIDER_URLS.openai,
-    providerKey: ctx.providerKey,
+    providerKey: primaryKey,
     modelId: modelToUse,
   };
 
-  const fallbackAttempts: FallbackAttempt[] = (projectConfig.fallbackProviders ?? [])
-    .filter((p) => p !== providerToUse)
-    .map((p) => {
-      const key = process.env[PROVIDER_KEY_ENVS[p] ?? ""] ?? null;
-      return key ? { provider: p, providerUrl: PROVIDER_URLS[p] ?? "", providerKey: key, modelId: modelToUse } : null;
-    })
-    .filter((a): a is FallbackAttempt => a !== null);
+  const fallbackAttempts: FallbackAttempt[] = await Promise.all(
+    (projectConfig.fallbackProviders ?? [])
+      .filter((p) => p !== providerToUse)
+      .map(async (p) => {
+        const key = ctx.passthrough
+          ? (process.env[PROVIDER_KEY_ENVS[p] ?? ""] ?? null)
+          : await pickKey(ctx.orgId, p);
+        return key ? { provider: p, providerUrl: PROVIDER_URLS[p] ?? "", providerKey: key, modelId: modelToUse } as FallbackAttempt : null;
+      }),
+  ).then((arr) => arr.filter((a): a is FallbackAttempt => a !== null));
 
   const forwardBody = { ...body, model: modelToUse, messages: cachedMessages };
 
