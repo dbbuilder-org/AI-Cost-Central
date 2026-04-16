@@ -15,6 +15,10 @@
     {
       "path": "/api/cron/brief-weekly",
       "schedule": "0 9 * * 1"
+    },
+    {
+      "path": "/api/cron/prune-logs",
+      "schedule": "0 3 * * *"
     }
   ]
 }
