@@ -4,13 +4,24 @@ import type { UsageRow } from "@/types";
 
 // ── Fixtures ───────────────────────────────────────────────────────────────
 
+// Compute relative dates at runtime so tests never go stale as the calendar advances
+function relDate(daysAgo: number): string {
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() - daysAgo);
+  return d.toISOString().slice(0, 10);
+}
+const TODAY_UTC      = relDate(0);
+const YESTERDAY_UTC  = relDate(1);
+const TWO_DAYS_AGO   = relDate(2);
+const PRIOR_WEEK_UTC = relDate(8);
+
 function makeRow(overrides: Partial<UsageRow> = {}): UsageRow {
   return {
     provider: "openai",
     apiKeyId: "key_001",
     apiKeyName: "Prod Key",
     model: "gpt-4o",
-    date: "2026-04-13",
+    date: YESTERDAY_UTC,
     inputTokens: 1000,
     outputTokens: 200,
     requests: 10,
@@ -21,11 +32,11 @@ function makeRow(overrides: Partial<UsageRow> = {}): UsageRow {
   };
 }
 
-/** 14 days of rows for a given model */
+/** N days of rows ending on yesterday */
 function daysOfRows(
   days: number,
   costPerDay: number,
-  endDate = "2026-04-13",
+  endDate = YESTERDAY_UTC,
   overrides: Partial<UsageRow> = {}
 ): UsageRow[] {
   const rows: UsageRow[] = [];
@@ -50,14 +61,14 @@ describe("computeDailyData", () => {
   it("identifies the most recent date as yesterday", () => {
     const rows = daysOfRows(7, 5.0);
     const result = computeDailyData(rows);
-    expect(result.reportDate).toBe("2026-04-13");
+    expect(result.reportDate).toBe(YESTERDAY_UTC);
   });
 
   it("computes yesterday total cost correctly", () => {
     const rows = [
-      makeRow({ date: "2026-04-12", costUSD: 3.0 }),
-      makeRow({ date: "2026-04-13", costUSD: 7.0 }),
-      makeRow({ date: "2026-04-13", costUSD: 2.0, model: "gpt-4o-mini" }),
+      makeRow({ date: TWO_DAYS_AGO, costUSD: 3.0 }),
+      makeRow({ date: YESTERDAY_UTC, costUSD: 7.0 }),
+      makeRow({ date: YESTERDAY_UTC, costUSD: 2.0, model: "gpt-4o-mini" }),
     ];
     const result = computeDailyData(rows);
     expect(result.yesterday.totalCostUSD).toBeCloseTo(9.0);
@@ -65,8 +76,8 @@ describe("computeDailyData", () => {
 
   it("computes prior day change percentage", () => {
     const rows = [
-      makeRow({ date: "2026-04-12", costUSD: 5.0 }),
-      makeRow({ date: "2026-04-13", costUSD: 10.0 }),
+      makeRow({ date: TWO_DAYS_AGO, costUSD: 5.0 }),
+      makeRow({ date: YESTERDAY_UTC, costUSD: 10.0 }),
     ];
     const result = computeDailyData(rows);
     expect(result.priorDay.changePct).toBeCloseTo(100.0);
@@ -74,7 +85,7 @@ describe("computeDailyData", () => {
 
   it("handles zero prior day gracefully (changePct=0)", () => {
     const rows = [
-      makeRow({ date: "2026-04-13", costUSD: 10.0 }),
+      makeRow({ date: YESTERDAY_UTC, costUSD: 10.0 }),
     ];
     const result = computeDailyData(rows);
     expect(result.priorDay.changePct).toBe(0);
@@ -83,9 +94,9 @@ describe("computeDailyData", () => {
 
   it("groups by provider correctly", () => {
     const rows = [
-      makeRow({ date: "2026-04-13", provider: "openai", costUSD: 5.0 }),
-      makeRow({ date: "2026-04-13", provider: "anthropic", costUSD: 3.0 }),
-      makeRow({ date: "2026-04-13", provider: "openai", costUSD: 2.0, model: "gpt-4o-mini" }),
+      makeRow({ date: YESTERDAY_UTC, provider: "openai", costUSD: 5.0 }),
+      makeRow({ date: YESTERDAY_UTC, provider: "anthropic", costUSD: 3.0 }),
+      makeRow({ date: YESTERDAY_UTC, provider: "openai", costUSD: 2.0, model: "gpt-4o-mini" }),
     ];
     const result = computeDailyData(rows);
     const oai = result.yesterday.byProvider.find((p) => p.provider === "openai");
@@ -96,8 +107,8 @@ describe("computeDailyData", () => {
 
   it("sorts byProvider descending by cost", () => {
     const rows = [
-      makeRow({ date: "2026-04-13", provider: "openai", costUSD: 1.0 }),
-      makeRow({ date: "2026-04-13", provider: "anthropic", costUSD: 10.0 }),
+      makeRow({ date: YESTERDAY_UTC, provider: "openai", costUSD: 1.0 }),
+      makeRow({ date: YESTERDAY_UTC, provider: "anthropic", costUSD: 10.0 }),
     ];
     const result = computeDailyData(rows);
     expect(result.yesterday.byProvider[0].provider).toBe("anthropic");
@@ -105,8 +116,8 @@ describe("computeDailyData", () => {
 
   it("computes pctOfTotal correctly", () => {
     const rows = [
-      makeRow({ date: "2026-04-13", provider: "openai", costUSD: 8.0 }),
-      makeRow({ date: "2026-04-13", provider: "anthropic", costUSD: 2.0 }),
+      makeRow({ date: YESTERDAY_UTC, provider: "openai", costUSD: 8.0 }),
+      makeRow({ date: YESTERDAY_UTC, provider: "anthropic", costUSD: 2.0 }),
     ];
     const result = computeDailyData(rows);
     const oai = result.yesterday.byProvider.find((p) => p.provider === "openai");
@@ -115,7 +126,7 @@ describe("computeDailyData", () => {
 
   it("limits topModels to 8", () => {
     const rows = Array.from({ length: 12 }, (_, i) =>
-      makeRow({ date: "2026-04-13", model: `model-${i}`, costUSD: i + 1 })
+      makeRow({ date: YESTERDAY_UTC, model: `model-${i}`, costUSD: i + 1 })
     );
     const result = computeDailyData(rows);
     expect(result.yesterday.topModels).toHaveLength(8);
@@ -123,8 +134,8 @@ describe("computeDailyData", () => {
 
   it("sorts topModels descending by cost", () => {
     const rows = [
-      makeRow({ date: "2026-04-13", model: "cheap", costUSD: 1.0 }),
-      makeRow({ date: "2026-04-13", model: "expensive", costUSD: 50.0 }),
+      makeRow({ date: YESTERDAY_UTC, model: "cheap", costUSD: 1.0 }),
+      makeRow({ date: YESTERDAY_UTC, model: "expensive", costUSD: 50.0 }),
     ];
     const result = computeDailyData(rows);
     expect(result.yesterday.topModels[0].model).toBe("expensive");
@@ -147,16 +158,14 @@ describe("computeDailyData", () => {
   });
 
   it("skips today's partial data and reports on last complete day", () => {
-    const todayUTC = new Date().toISOString().slice(0, 10);
-    const d = new Date();
-    d.setUTCDate(d.getUTCDate() - 1);
-    const yesterdayUTC = d.toISOString().slice(0, 10);
+    // TODAY_UTC has partial data (in-progress day); YESTERDAY_UTC is the last complete day
     const rows = [
-      makeRow({ date: yesterdayUTC, costUSD: 5.0 }),
-      makeRow({ date: todayUTC, costUSD: 999.0 }), // today — partial, skip
+      makeRow({ date: YESTERDAY_UTC, costUSD: 5.0 }),
+      makeRow({ date: TODAY_UTC, costUSD: 999.0 }), // today — partial, skip
     ];
     const result = computeDailyData(rows);
-    expect(result.reportDate).toBe(yesterdayUTC);
+    // Should report on yesterday (last complete day), not today's partial data
+    expect(result.reportDate).toBe(YESTERDAY_UTC);
     expect(result.yesterday.totalCostUSD).toBeCloseTo(5.0);
   });
 });
@@ -171,8 +180,8 @@ describe("computeWeeklyData", () => {
 
   it("computes this week and prior week totals", () => {
     // 14 days — last 7 = $10/day, prior 7 = $5/day
-    const thisWeekRows = daysOfRows(7, 10.0, "2026-04-13");
-    const priorWeekRows = daysOfRows(7, 5.0, "2026-04-06");
+    const thisWeekRows = daysOfRows(7, 10.0, YESTERDAY_UTC);
+    const priorWeekRows = daysOfRows(7, 5.0, PRIOR_WEEK_UTC);
     const rows = [...priorWeekRows, ...thisWeekRows];
     const result = computeWeeklyData(rows);
 
@@ -182,24 +191,24 @@ describe("computeWeeklyData", () => {
   });
 
   it("identifies new models not present in prior week", () => {
-    const existing = daysOfRows(14, 5.0, "2026-04-13", { model: "gpt-4o" });
-    const newModel = daysOfRows(3, 2.0, "2026-04-13", { model: "gpt-5-preview" });
+    const existing = daysOfRows(14, 5.0, YESTERDAY_UTC, { model: "gpt-4o" });
+    const newModel = daysOfRows(3, 2.0, YESTERDAY_UTC, { model: "gpt-5-preview" });
     const result = computeWeeklyData([...existing, ...newModel]);
     expect(result.newModels).toContain("gpt-5-preview");
     expect(result.newModels).not.toContain("gpt-4o");
   });
 
   it("identifies new keys not present in prior week", () => {
-    const oldKey = daysOfRows(14, 5.0, "2026-04-13", { apiKeyId: "key_old", apiKeyName: "Old Key" });
-    const newKey = daysOfRows(3, 2.0, "2026-04-13", { apiKeyId: "key_new", apiKeyName: "Brand New Key" });
+    const oldKey = daysOfRows(14, 5.0, YESTERDAY_UTC, { apiKeyId: "key_old", apiKeyName: "Old Key" });
+    const newKey = daysOfRows(3, 2.0, YESTERDAY_UTC, { apiKeyId: "key_new", apiKeyName: "Brand New Key" });
     const result = computeWeeklyData([...oldKey, ...newKey]);
     expect(result.newKeys.some((k) => k.name === "Brand New Key")).toBe(true);
     expect(result.newKeys.some((k) => k.name === "Old Key")).toBe(false);
   });
 
   it("computes WoW change percentage correctly", () => {
-    const thisWeek = daysOfRows(7, 20.0, "2026-04-13");
-    const priorWeek = daysOfRows(7, 10.0, "2026-04-06");
+    const thisWeek = daysOfRows(7, 20.0, YESTERDAY_UTC);
+    const priorWeek = daysOfRows(7, 10.0, PRIOR_WEEK_UTC);
     const result = computeWeeklyData([...priorWeek, ...thisWeek]);
     expect(result.priorWeek.changePct).toBeCloseTo(100.0);
   });
@@ -212,8 +221,8 @@ describe("computeWeeklyData", () => {
   });
 
   it("groups byProvider correctly for the week", () => {
-    const oai = daysOfRows(7, 10.0, "2026-04-13", { provider: "openai" });
-    const ant = daysOfRows(7, 4.0, "2026-04-13", { provider: "anthropic" });
+    const oai = daysOfRows(7, 10.0, YESTERDAY_UTC, { provider: "openai" });
+    const ant = daysOfRows(7, 4.0, YESTERDAY_UTC, { provider: "anthropic" });
     const result = computeWeeklyData([...oai, ...ant]);
     const oaiEntry = result.thisWeek.byProvider.find((p) => p.provider === "openai");
     const antEntry = result.thisWeek.byProvider.find((p) => p.provider === "anthropic");
@@ -223,21 +232,21 @@ describe("computeWeeklyData", () => {
 
   it("limits topModels to 10", () => {
     const rows = Array.from({ length: 15 }, (_, i) =>
-      makeRow({ date: "2026-04-13", model: `model-${i}`, costUSD: 1.0 })
+      makeRow({ date: YESTERDAY_UTC, model: `model-${i}`, costUSD: 1.0 })
     );
     const result = computeWeeklyData(rows);
     expect(result.thisWeek.topModels.length).toBeLessThanOrEqual(10);
   });
 
   it("generates a week label", () => {
-    const rows = daysOfRows(14, 5.0, "2026-04-13");
+    const rows = daysOfRows(14, 5.0, YESTERDAY_UTC);
     const result = computeWeeklyData(rows);
     expect(result.weekLabel).toBeTruthy();
     expect(result.weekLabel).toContain("2026");
   });
 
   it("byDay covers each date in the current week", () => {
-    const rows = daysOfRows(14, 5.0, "2026-04-13");
+    const rows = daysOfRows(14, 5.0, YESTERDAY_UTC);
     const result = computeWeeklyData(rows);
     expect(result.thisWeek.byDay.length).toBeGreaterThanOrEqual(6);
     expect(result.thisWeek.byDay.every((d) => d.date >= result.thisWeek.startDate)).toBe(true);
