@@ -270,6 +270,10 @@ export interface ProjectRoutingConfig {
   promptCaching?: boolean;                               // inject cache_control for Anthropic (default: true)
   latencyWeight?: number;                                // 0–1; how much to weight latency vs cost (default: 0)
   abExperimentId?: string | null;                        // active A/B experiment for this project
+  // Phase 6: custom / private endpoints
+  customEndpointUrl?: string;                            // self-hosted Ollama/vLLM/Azure endpoint
+  customEndpointApiKey?: string;                         // bearer key for custom endpoint (stored encrypted)
+  openrouterReferer?: string;                            // HTTP-Referer passed to OpenRouter-compat endpoints
 }
 
 // ── Model Pricing (live, updated by cron every 6h) ───────────────────────────

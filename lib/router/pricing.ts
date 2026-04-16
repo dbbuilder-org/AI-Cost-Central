@@ -42,10 +42,25 @@ export const PRICING_CATALOG: PricingEntry[] = [
   // ── Groq ──
   { modelId: "llama-3.3-70b-versatile",  provider: "groq", displayName: "Llama 3.3 70B (Groq)", inputPer1M: 0.59, outputPer1M: 0.79, contextWindow: 128_000 },
   { modelId: "llama-3.1-8b-instant",     provider: "groq", displayName: "Llama 3.1 8B (Groq)",  inputPer1M: 0.05, outputPer1M: 0.08, contextWindow: 128_000 },
+  // ── Groq (extended) ──
+  { modelId: "llama-3.3-70b-specdec",    provider: "groq", displayName: "Llama 3.3 70B SpecDec", inputPer1M: 0.59, outputPer1M: 0.99, contextWindow: 8_192 },
+  { modelId: "llama-3.2-90b-vision",     provider: "groq", displayName: "Llama 3.2 90B Vision", inputPer1M: 0.90, outputPer1M: 0.90, contextWindow: 128_000 },
+  { modelId: "mixtral-8x7b-32768",       provider: "groq", displayName: "Mixtral 8x7B (Groq)",   inputPer1M: 0.24, outputPer1M: 0.24, contextWindow: 32_768 },
   // ── Mistral ──
-  { modelId: "mistral-large-latest",     provider: "mistral", displayName: "Mistral Large",      inputPer1M: 2.00, outputPer1M: 6.00, contextWindow: 128_000 },
-  { modelId: "mistral-small-latest",     provider: "mistral", displayName: "Mistral Small",      inputPer1M: 0.20, outputPer1M: 0.60, contextWindow: 32_000 },
-  { modelId: "ministral-8b-latest",      provider: "mistral", displayName: "Ministral 8B",       inputPer1M: 0.10, outputPer1M: 0.10, contextWindow: 128_000 },
+  { modelId: "mistral-large-latest",     provider: "mistral", displayName: "Mistral Large",       inputPer1M: 2.00, outputPer1M: 6.00, contextWindow: 128_000 },
+  { modelId: "mistral-small-latest",     provider: "mistral", displayName: "Mistral Small",       inputPer1M: 0.20, outputPer1M: 0.60, contextWindow: 32_000 },
+  { modelId: "ministral-8b-latest",      provider: "mistral", displayName: "Ministral 8B",        inputPer1M: 0.10, outputPer1M: 0.10, contextWindow: 128_000 },
+  { modelId: "codestral-latest",         provider: "mistral", displayName: "Codestral",           inputPer1M: 0.20, outputPer1M: 0.60, contextWindow: 256_000 },
+  // ── Cohere ──
+  { modelId: "command-r-plus",           provider: "cohere", displayName: "Command R+",           inputPer1M: 2.50, outputPer1M: 10.00, contextWindow: 128_000 },
+  { modelId: "command-r",               provider: "cohere", displayName: "Command R",             inputPer1M: 0.15, outputPer1M: 0.60,  contextWindow: 128_000 },
+  { modelId: "embed-multilingual-v3",    provider: "cohere", displayName: "Embed Multilingual v3",inputPer1M: 0.10, outputPer1M: 0,      contextWindow: 512 },
+  { modelId: "embed-english-v3",         provider: "cohere", displayName: "Embed English v3",     inputPer1M: 0.10, outputPer1M: 0,      contextWindow: 512 },
+  // ── AWS Bedrock (Claude) ──
+  // Bedrock pricing adds ~15% overhead vs direct Anthropic; these are approximate all-in
+  { modelId: "bedrock/claude-sonnet-4",  provider: "bedrock", displayName: "Claude Sonnet 4 (Bedrock)", inputPer1M: 3.45, outputPer1M: 17.25, contextWindow: 200_000 },
+  { modelId: "bedrock/claude-haiku-3-5", provider: "bedrock", displayName: "Claude Haiku 3.5 (Bedrock)", inputPer1M: 1.15, outputPer1M: 5.75,  contextWindow: 200_000 },
+  { modelId: "bedrock/llama-3-70b",      provider: "bedrock", displayName: "Llama 3 70B (Bedrock)",      inputPer1M: 0.72, outputPer1M: 0.96,  contextWindow: 128_000 },
 ];
 
 export function getPricing(modelId: string): PricingEntry | undefined {
@@ -74,4 +89,12 @@ export const QUALITY_SCORES: Record<string, ModelCapabilities["qualityScores"]> 
   "gemini-2.0-flash":        { extraction: 88, classification: 87, summarization: 86, generation: 80, coding: 82, reasoning: 78, chat: 84, embedding: 0, vision: 85 },
   "llama-3.3-70b-versatile": { extraction: 83, classification: 82, summarization: 82, generation: 75, coding: 80, reasoning: 72, chat: 80, embedding: 0, vision: 0 },
   "llama-3.1-8b-instant":    { extraction: 74, classification: 73, summarization: 72, generation: 65, coding: 68, reasoning: 60, chat: 70, embedding: 0, vision: 0 },
+  "llama-3.3-70b-specdec":   { extraction: 83, classification: 82, summarization: 82, generation: 75, coding: 80, reasoning: 72, chat: 80, embedding: 0, vision: 0 },
+  "mixtral-8x7b-32768":      { extraction: 80, classification: 79, summarization: 78, generation: 70, coding: 76, reasoning: 68, chat: 76, embedding: 0, vision: 0 },
+  "mistral-large-latest":    { extraction: 88, classification: 87, summarization: 86, generation: 82, coding: 84, reasoning: 80, chat: 86, embedding: 0, vision: 0 },
+  "mistral-small-latest":    { extraction: 78, classification: 77, summarization: 76, generation: 68, coding: 72, reasoning: 64, chat: 75, embedding: 0, vision: 0 },
+  "ministral-8b-latest":     { extraction: 73, classification: 72, summarization: 71, generation: 64, coding: 67, reasoning: 59, chat: 70, embedding: 0, vision: 0 },
+  "codestral-latest":        { extraction: 80, classification: 78, summarization: 75, generation: 72, coding: 92, reasoning: 74, chat: 74, embedding: 0, vision: 0 },
+  "command-r-plus":          { extraction: 87, classification: 86, summarization: 87, generation: 85, coding: 78, reasoning: 76, chat: 86, embedding: 0, vision: 0 },
+  "command-r":               { extraction: 78, classification: 77, summarization: 76, generation: 73, coding: 66, reasoning: 64, chat: 75, embedding: 0, vision: 0 },
 };

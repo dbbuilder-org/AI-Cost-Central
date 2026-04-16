@@ -12,6 +12,7 @@ import { RoutingDecisionsTable } from "@/components/dashboard/RoutingDecisionsTa
 import { CodeAttributionCard } from "@/components/dashboard/CodeAttributionCard";
 import { LatencyStatsCard } from "@/components/dashboard/LatencyStatsCard";
 import { ABExperimentsCard } from "@/components/dashboard/ABExperimentsCard";
+import { OpenRouterCompareCard } from "@/components/dashboard/OpenRouterCompareCard";
 import { SpendOverTime } from "@/components/charts/SpendOverTime";
 import { CostByModel } from "@/components/charts/CostByModel";
 import { CostByKey } from "@/components/charts/CostByKey";
@@ -159,6 +160,9 @@ export default function DashboardPage() {
               <TabsTrigger value="experiments" className="data-[state=active]:bg-gray-800 text-gray-400 data-[state=active]:text-white">
                 A/B Tests
               </TabsTrigger>
+              <TabsTrigger value="vs-openrouter" className="data-[state=active]:bg-gray-800 text-gray-400 data-[state=active]:text-white">
+                vs OpenRouter
+              </TabsTrigger>
               {recommendations.length > 0 && (
                 <TabsTrigger value="recommendations" className="data-[state=active]:bg-gray-800 text-gray-400 data-[state=active]:text-white">
                   Recommendations
@@ -213,6 +217,10 @@ export default function DashboardPage() {
 
             <TabsContent value="experiments" className="mt-4">
               <ABExperimentsCard />
+            </TabsContent>
+
+            <TabsContent value="vs-openrouter" className="mt-4">
+              <OpenRouterCompareCard />
             </TabsContent>
 
             {recommendations.length > 0 && (
