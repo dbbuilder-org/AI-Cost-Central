@@ -15,6 +15,7 @@ import { injectAnthropicCacheControl, extractCacheReadTokens } from "@/lib/route
 import { forwardWithFallback, type FallbackAttempt } from "@/lib/router/fallback";
 import { assignExperiment } from "@/lib/router/experiment";
 import { getLatencyStats } from "@/lib/router/latency";
+import { normalizeModelName } from "@/lib/router/normalize";
 import { db, schema } from "@/lib/db";
 import { eq, and } from "drizzle-orm";
 import { randomUUID } from "crypto";
@@ -28,6 +29,8 @@ const PROVIDER_URLS: Record<string, string> = {
   google:    "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
   groq:      "https://api.groq.com/openai/v1/chat/completions",
   mistral:   "https://api.mistral.ai/v1/chat/completions",
+  cohere:    "https://api.cohere.ai/compatibility/v1/chat/completions",
+  bedrock:   "", // resolved per-request from project config or env
 };
 
 // Per-provider API key env vars for fallback chains
@@ -161,10 +164,23 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: { message: "Invalid JSON body", type: "invalid_request_error" } }, { status: 400 });
   }
 
-  const modelRequested = (body.model as string) ?? "gpt-4o-mini";
+  const rawModel = (body.model as string) ?? "gpt-4o-mini";
   const messages = (body.messages as Array<{ role: string; content: unknown }>) ?? [];
   const isStream = body.stream === true;
   const callsite = req.headers.get("x-source-file") ?? undefined;
+  // OpenRouter-compatible headers (Phase 6)
+  const referer = req.headers.get("http-referer") ?? req.headers.get("referer") ?? undefined;
+  const appTitle = req.headers.get("x-title") ?? undefined;
+
+  // ── Model name normalization (Phase 6) ──
+  // Handles: provider/model, litellm/model, legacy names, OpenRouter aliases
+  const normalized = normalizeModelName(rawModel);
+  const modelRequested = normalized.modelId;
+  // If the normalized provider differs from ctx.provider (e.g. "anthropic/claude-...")
+  // update the provider for routing — only for passthrough where we use the caller's key
+  if (!ctx.passthrough && normalized.provider !== ctx.provider && PROVIDER_URLS[normalized.provider]) {
+    ctx.provider = normalized.provider;
+  }
 
   // Unique nonce for deterministic A/B assignment
   const requestNonce = randomUUID();
@@ -373,7 +389,8 @@ export async function POST(req: NextRequest) {
     ...responseData,
     model: finalModel,
     _smartrouter: {
-      model_requested: modelRequested,
+      model_requested: rawModel,
+      model_normalized: modelRequested,
       model_used: finalModel,
       provider_used: finalProvider,
       task_type: classification.taskType,
@@ -388,6 +405,7 @@ export async function POST(req: NextRequest) {
       experiment: experimentAssignment
         ? { id: experimentAssignment.experimentId, variant: experimentAssignment.variant }
         : null,
+      ...(normalized.isAlias ? { model_alias_from: rawModel } : {}),
     },
   };
 
@@ -395,6 +413,7 @@ export async function POST(req: NextRequest) {
     headers: {
       "x-sr-model-used": finalModel,
       "x-sr-model-requested": modelRequested,
+      "x-sr-model-original": rawModel,
       "x-sr-task-type": classification.taskType,
       "x-sr-provider-used": finalProvider,
       "x-sr-cost-usd": costUSD.toFixed(8),
