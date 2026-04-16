@@ -12,6 +12,7 @@ import { enrichWithAI } from "@/lib/alerts/analyzer";
 import { sendAlertEmail } from "@/lib/alerts/email";
 import { fetchAllUsageRows } from "@/lib/alerts/fetchAllRows";
 import { sendPushNotifications } from "@/lib/alerts/push";
+import { deliverWebhookEvent } from "@/lib/webhooks/deliver";
 import type { Alert } from "@/types/alerts";
 
 async function invalidateAlertsCache() {
@@ -60,6 +61,7 @@ export async function GET(req: NextRequest) {
       [emailResult, pushResult] = await Promise.all([
         sendAlertEmail(alerts),
         sendPushNotifications(alerts),
+        deliverWebhookEvent("alert.fired", { alerts, count: alerts.length }).catch(() => undefined),
       ]);
     }
 

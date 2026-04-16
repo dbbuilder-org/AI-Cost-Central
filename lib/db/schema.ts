@@ -233,6 +233,47 @@ export interface ProjectRoutingConfig {
   budgetAction?: "block" | "downgrade";                  // default: "downgrade"
 }
 
+// ── Model Pricing (live, updated by cron every 6h) ───────────────────────────
+// Seeded from LiteLLM OSS pricing JSON + provider APIs.
+// Routing engine prefers DB pricing over hardcoded catalog.
+
+export const modelPricing = pgTable("model_pricing", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  modelId: text("model_id").notNull(),                   // e.g. "gpt-4o", "claude-sonnet-4-6"
+  provider: text("provider").notNull(),                  // openai|anthropic|google|groq|mistral
+  displayName: text("display_name"),
+  inputPer1M: numeric("input_per_1m", { precision: 12, scale: 6 }).notNull(),
+  outputPer1M: numeric("output_per_1m", { precision: 12, scale: 6 }).notNull(),
+  cacheReadPer1M: numeric("cache_read_per_1m", { precision: 12, scale: 6 }),
+  contextWindow: integer("context_window"),
+  maxOutputTokens: integer("max_output_tokens"),
+  source: text("source").notNull().default("manual"),   // manual|litellm|provider_api
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("model_pricing_model_id_idx").on(t.modelId),
+  index("model_pricing_provider_idx").on(t.provider),
+]);
+
+// ── Org Webhooks ──────────────────────────────────────────────────────────────
+// Per-org HTTP endpoints that receive event payloads.
+// Supported events: alert.fired, budget.exceeded, model.price_changed
+
+export const orgWebhooks = pgTable("org_webhooks", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: text("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  url: text("url").notNull(),
+  description: text("description"),
+  events: text("events").array().notNull().default(sql`'{}'`), // ["alert.fired","budget.exceeded"]
+  secret: text("secret"),                              // HMAC-SHA256 signing secret
+  isActive: boolean("is_active").notNull().default(true),
+  lastDeliveredAt: timestamp("last_delivered_at", { withTimezone: true }),
+  lastStatusCode: integer("last_status_code"),
+  failureCount: integer("failure_count").notNull().default(0),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index("org_webhooks_org_idx").on(t.orgId),
+]);
+
 // ── Type exports ──────────────────────────────────────────────────────────────
 
 export type Organization = typeof organizations.$inferSelect;
@@ -248,3 +289,5 @@ export type Invitation = typeof invitations.$inferSelect;
 export type AuditLogEntry = typeof auditLog.$inferSelect;
 export type RequestLog = typeof requestLogs.$inferSelect;
 export type NewRequestLog = typeof requestLogs.$inferInsert;
+export type ModelPricing = typeof modelPricing.$inferSelect;
+export type OrgWebhook = typeof orgWebhooks.$inferSelect;
