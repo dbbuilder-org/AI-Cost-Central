@@ -35,10 +35,11 @@ export const useDashboard = create<DashboardState>((set, get) => ({
 
     set({ loading: true, error: null });
     try {
-      const [oaiRes, anthropicRes, googleRes] = await Promise.allSettled([
+      const [oaiRes, anthropicRes, googleRes, srRes] = await Promise.allSettled([
         fetch("/api/openai/usage?days=28"),
         fetch("/api/anthropic/usage"),
         fetch("/api/google/usage"),
+        fetch("/api/smartrouter/usage?days=28"),
       ]);
 
       const allRows: UsageRow[] = [];
@@ -72,6 +73,12 @@ export const useDashboard = create<DashboardState>((set, get) => ({
           const err = await googleRes.value.json().catch(() => ({ error: googleRes.value.statusText }));
           warnings.push(`Google: ${err.error ?? "fetch failed"}`);
         }
+      }
+
+      // SmartRouter-proxied usage (non-fatal if unavailable)
+      if (srRes.status === "fulfilled" && srRes.value.ok) {
+        const data: UsageRow[] = await srRes.value.json();
+        allRows.push(...data);
       }
 
       const days = parseInt(get().dateRange);
