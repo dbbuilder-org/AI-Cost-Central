@@ -23,8 +23,12 @@ export interface ForecastResult {
   r2: number;                  // goodness of fit (0-1)
   projectedDailyCost: number;  // next day's predicted cost
   projectedMonthTotal: number; // sum for remaining calendar days in month
+  mtdUsd: number;              // spend in current calendar month so far
   daysUsed: number;            // number of data points used
+  daysRemaining: number;       // calendar days left in this month (excl. today)
   confidence: "high" | "medium" | "low";
+  /** Per-day projected spend for the remainder of the current month */
+  forecastDays: Array<{ date: string; projectedUsd: number }>;
 }
 
 export function computeForecast(
@@ -34,7 +38,8 @@ export function computeForecast(
   const EMPTY: ForecastResult = {
     slope: 0, intercept: 0, r2: 0,
     projectedDailyCost: 0, projectedMonthTotal: 0,
-    daysUsed: 0, confidence: "low",
+    mtdUsd: 0, daysUsed: 0, daysRemaining: 0,
+    confidence: "low", forecastDays: [],
   };
 
   if (points.length < 3) return EMPTY;
@@ -69,18 +74,30 @@ export function computeForecast(
   // Project next day (index = n)
   const projectedDailyCost = Math.max(0, slope * n + intercept);
 
-  // Days remaining in current month
+  // Days remaining in current month (excluding today)
   const today = referenceDate ?? new Date().toISOString().slice(0, 10);
   const todayDate = new Date(today + "T00:00:00Z");
   const year = todayDate.getUTCFullYear();
   const month = todayDate.getUTCMonth();
   const lastDay = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
   const currentDay = todayDate.getUTCDate();
-  const daysRemaining = lastDay - currentDay + 1; // include today
+  const daysRemaining = lastDay - currentDay; // days after today
 
-  let projectedMonthTotal = 0;
-  for (let d = 0; d < daysRemaining; d++) {
-    projectedMonthTotal += Math.max(0, slope * (n + d) + intercept);
+  // MTD: sum of actual costs in current calendar month
+  const monthPrefix = today.slice(0, 7); // "YYYY-MM"
+  const mtdUsd = sorted
+    .filter((p) => p.date.startsWith(monthPrefix))
+    .reduce((s, p) => s + p.costUSD, 0);
+
+  // Per-day forecast for remainder of month
+  const forecastDays: ForecastResult["forecastDays"] = [];
+  let projectedMonthTotal = mtdUsd;
+  for (let d = 1; d <= daysRemaining; d++) {
+    const futureDate = new Date(Date.UTC(year, month, currentDay + d));
+    const dateStr = futureDate.toISOString().slice(0, 10);
+    const projectedUsd = Math.max(0, slope * (n - 1 + d) + intercept);
+    forecastDays.push({ date: dateStr, projectedUsd });
+    projectedMonthTotal += projectedUsd;
   }
 
   const confidence: ForecastResult["confidence"] =
@@ -92,8 +109,11 @@ export function computeForecast(
     r2,
     projectedDailyCost,
     projectedMonthTotal,
+    mtdUsd,
     daysUsed: n,
+    daysRemaining,
     confidence,
+    forecastDays,
   };
 }
 

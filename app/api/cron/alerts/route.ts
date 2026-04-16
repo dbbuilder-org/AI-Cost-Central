@@ -12,6 +12,7 @@ import { enrichWithAI } from "@/lib/alerts/analyzer";
 import { sendAlertEmail } from "@/lib/alerts/email";
 import { fetchAllUsageRows } from "@/lib/alerts/fetchAllRows";
 import { sendPushNotifications } from "@/lib/alerts/push";
+import { sendSlackAlerts } from "@/lib/alerts/slack";
 import { deliverWebhookEvent } from "@/lib/webhooks/deliver";
 import type { Alert } from "@/types/alerts";
 
@@ -57,12 +58,14 @@ export async function GET(req: NextRequest) {
 
     // Send email + push only if there are alerts
     let pushResult: { sent: number; failed: number } = { sent: 0, failed: 0 };
+    let slackResult: { sent: boolean; error?: string } = { sent: false };
     if (alerts.length > 0) {
-      [emailResult, pushResult] = await Promise.all([
+      [emailResult, pushResult, slackResult] = await Promise.all([
         sendAlertEmail(alerts),
         sendPushNotifications(alerts),
+        sendSlackAlerts(alerts),
         deliverWebhookEvent("alert.fired", { alerts, count: alerts.length }).catch(() => undefined),
-      ]);
+      ]) as [typeof emailResult, typeof pushResult, typeof slackResult];
     }
 
     return NextResponse.json({
@@ -75,6 +78,8 @@ export async function GET(req: NextRequest) {
       },
       emailSent: emailResult.sent,
       emailError: emailResult.error,
+      slackSent: slackResult.sent,
+      slackError: slackResult.error,
       pushSent: pushResult.sent,
       pushFailed: pushResult.failed,
       startedAt,
