@@ -4,25 +4,39 @@
  * Drop-in replacement: change base_url to https://aicostcentral.servicevision.io/v1
  * and api_key to a SmartRouter virtual key (sk-sr-...).
  *
- * Phase 2: task classification + smart routing + per-project config + budget enforcement.
+ * Phase 5: fallback chains, prompt caching, latency-aware routing, A/B experiments.
  */
 import { NextRequest, NextResponse } from "next/server";
 import { classifyRequest } from "@/lib/router/classifier";
 import { route, VIRTUAL_MODELS } from "@/lib/router/engine";
 import { estimateCost } from "@/lib/router/pricing";
 import { checkBudget, effectiveTier } from "@/lib/router/budget";
+import { injectAnthropicCacheControl, extractCacheReadTokens } from "@/lib/router/cache";
+import { forwardWithFallback, type FallbackAttempt } from "@/lib/router/fallback";
+import { assignExperiment } from "@/lib/router/experiment";
+import { getLatencyStats } from "@/lib/router/latency";
 import { db, schema } from "@/lib/db";
 import { eq, and } from "drizzle-orm";
+import { randomUUID } from "crypto";
 import type { QualityTier } from "@/types/router";
 import type { ProjectRoutingConfig } from "@/lib/db/schema";
 
-// Provider base URLs
+// Provider base URLs (OpenAI-compat format for all)
 const PROVIDER_URLS: Record<string, string> = {
   openai:    "https://api.openai.com/v1/chat/completions",
   anthropic: "https://api.anthropic.com/v1/messages",
   google:    "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
   groq:      "https://api.groq.com/openai/v1/chat/completions",
   mistral:   "https://api.mistral.ai/v1/chat/completions",
+};
+
+// Per-provider API key env vars for fallback chains
+const PROVIDER_KEY_ENVS: Record<string, string> = {
+  openai:    "OPENAI_API_KEY",
+  anthropic: "ANTHROPIC_API_KEY",
+  google:    "GOOGLE_AI_API_KEY",
+  groq:      "GROQ_API_KEY",
+  mistral:   "MISTRAL_API_KEY",
 };
 
 /**
@@ -42,7 +56,7 @@ async function loadProjectConfig(orgId: string, projectId: string): Promise<Proj
   }
 }
 
-// Resolve virtual key → base context (key resolution stays synchronous)
+// Resolve virtual key → base context
 function resolveVirtualKey(authHeader: string | null): {
   projectId: string;
   orgId: string;
@@ -54,7 +68,6 @@ function resolveVirtualKey(authHeader: string | null): {
   if (!authHeader) return null;
   const raw = authHeader.replace("Bearer ", "");
 
-  // SmartRouter virtual key: validate against master key env var
   if (raw.startsWith("sk-sr-")) {
     const masterKey = process.env.SMARTROUTER_MASTER_KEY;
     if (masterKey && raw === masterKey) {
@@ -70,7 +83,6 @@ function resolveVirtualKey(authHeader: string | null): {
     return null;
   }
 
-  // Passthrough: treat the key as an OpenAI key directly
   if (raw.startsWith("sk-") || raw.startsWith("sk-proj-") || raw.startsWith("sk-admin-")) {
     return {
       projectId: "passthrough",
@@ -85,23 +97,6 @@ function resolveVirtualKey(authHeader: string | null): {
   return null;
 }
 
-async function forwardToProvider(
-  providerUrl: string,
-  providerKey: string,
-  body: Record<string, unknown>,
-  stream: boolean
-): Promise<Response> {
-  return fetch(providerUrl, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${providerKey}`,
-    },
-    body: JSON.stringify(body),
-    ...(stream ? {} : {}),
-  });
-}
-
 async function logRequest(data: {
   orgId: string;
   projectId: string;
@@ -111,14 +106,17 @@ async function logRequest(data: {
   taskType: string;
   inputTokens: number;
   outputTokens: number;
+  cacheReadTokens: number;
   costUSD: number;
   savingsUSD: number;
   latencyMs: number;
   success: boolean;
   errorCode?: string;
   callsite?: string;
+  fallbackCount: number;
+  experimentId?: string;
+  experimentVariant?: string;
 }) {
-  // Fire-and-forget — never block the response path
   db.insert(schema.requestLogs).values({
     orgId: data.orgId,
     projectId: data.projectId,
@@ -128,12 +126,16 @@ async function logRequest(data: {
     taskType: data.taskType,
     inputTokens: data.inputTokens,
     outputTokens: data.outputTokens,
+    cacheReadTokens: data.cacheReadTokens,
     costUsd: data.costUSD.toFixed(8),
     savingsUsd: data.savingsUSD.toFixed(8),
     latencyMs: data.latencyMs,
     success: data.success,
     errorCode: data.errorCode,
     callsite: data.callsite,
+    fallbackCount: data.fallbackCount,
+    experimentId: data.experimentId,
+    experimentVariant: data.experimentVariant,
   }).catch((err: unknown) => {
     console.warn("[SmartRouter] request log insert failed:", err instanceof Error ? err.message : err);
   });
@@ -162,25 +164,25 @@ export async function POST(req: NextRequest) {
   const modelRequested = (body.model as string) ?? "gpt-4o-mini";
   const messages = (body.messages as Array<{ role: string; content: unknown }>) ?? [];
   const isStream = body.stream === true;
-  // X-Source-File: "path/to/file.ts:42" — optional callsite header from app (Phase 3)
   const callsite = req.headers.get("x-source-file") ?? undefined;
 
-  // ── Load project routing config + check budget (parallel) ──
-  const [projectConfig, budgetStatus] = await Promise.all([
+  // Unique nonce for deterministic A/B assignment
+  const requestNonce = randomUUID();
+
+  // ── Load project routing config + budget + latency stats (parallel) ──
+  const [projectConfig, budgetStatus, latencyStats] = await Promise.all([
     loadProjectConfig(ctx.orgId, ctx.projectId),
     ctx.passthrough
       ? Promise.resolve({ exceeded: false } as const)
-      : checkBudget(ctx.orgId, ctx.projectId, {}), // preliminary check with no config needed — will refine below
+      : checkBudget(ctx.orgId, ctx.projectId, {}),
+    ctx.passthrough
+      ? Promise.resolve([])
+      : getLatencyStats(ctx.orgId),
   ]);
 
-  // If budget is exceeded and action=block, reject immediately
   if (budgetStatus.exceeded && budgetStatus.action === "block") {
     return NextResponse.json({
-      error: {
-        message: budgetStatus.reason,
-        type: "insufficient_quota",
-        code: "budget_exceeded",
-      },
+      error: { message: budgetStatus.reason, type: "insufficient_quota", code: "budget_exceeded" },
     }, { status: 429 });
   }
 
@@ -194,8 +196,17 @@ export async function POST(req: NextRequest) {
     tools: body.tools as unknown[],
   });
 
+  // ── A/B Experiment assignment ──
+  const experimentAssignment = await assignExperiment(
+    ctx.orgId,
+    ctx.projectId,
+    classification.taskType,
+    requestNonce,
+  );
+
   // ── Routing ──
   let modelToUse = modelRequested;
+  let providerToUse = ctx.provider;
   let routingDecision = null;
 
   const isVirtualModel = modelRequested in VIRTUAL_MODELS;
@@ -203,8 +214,10 @@ export async function POST(req: NextRequest) {
     (projectConfig.autoRoute !== false) &&
     (isVirtualModel || process.env.SMARTROUTER_AUTO_ROUTE === "true");
 
-  if (shouldRoute) {
-    // Apply budget downgrade if needed, then project config overrides
+  if (experimentAssignment) {
+    // A/B experiment overrides the routing decision
+    modelToUse = experimentAssignment.modelId;
+  } else if (shouldRoute) {
     const baseTier = isVirtualModel ? VIRTUAL_MODELS[modelRequested] : (projectConfig.qualityTier ?? ctx.qualityTier);
     const tier = effectiveTier(baseTier, budgetStatus);
 
@@ -219,29 +232,54 @@ export async function POST(req: NextRequest) {
       requiresVision: classification.requiresVision,
       requiresJsonMode: classification.requiresJsonMode,
       requiresFunctionCalling: classification.requiresFunctionCalling,
+      latencyWeight: projectConfig.latencyWeight ?? 0,
+      latencyStats,
     });
     modelToUse = routingDecision.winner.modelId;
+    providerToUse = routingDecision.winner.provider;
   }
 
-  // ── Forward to Provider ──
-  const providerUrl = PROVIDER_URLS[ctx.provider] ?? PROVIDER_URLS.openai;
-  const forwardBody = { ...body, model: modelToUse };
+  // ── Prompt caching (Anthropic only) ──
+  const cachingEnabled = projectConfig.promptCaching !== false; // default true
+  const cachedMessages = injectAnthropicCacheControl(messages, providerToUse, cachingEnabled);
 
-  let providerResponse: Response;
+  // ── Build fallback chain ──
+  const primaryAttempt: FallbackAttempt = {
+    provider: providerToUse,
+    providerUrl: PROVIDER_URLS[providerToUse] ?? PROVIDER_URLS.openai,
+    providerKey: ctx.providerKey,
+    modelId: modelToUse,
+  };
+
+  const fallbackAttempts: FallbackAttempt[] = (projectConfig.fallbackProviders ?? [])
+    .filter((p) => p !== providerToUse)
+    .map((p) => {
+      const key = process.env[PROVIDER_KEY_ENVS[p] ?? ""] ?? null;
+      return key ? { provider: p, providerUrl: PROVIDER_URLS[p] ?? "", providerKey: key, modelId: modelToUse } : null;
+    })
+    .filter((a): a is FallbackAttempt => a !== null);
+
+  const forwardBody = { ...body, model: modelToUse, messages: cachedMessages };
+
+  // ── Forward with fallback ──
+  let fallbackResult: Awaited<ReturnType<typeof forwardWithFallback>>;
   try {
-    providerResponse = await forwardToProvider(providerUrl, ctx.providerKey, forwardBody, isStream);
+    fallbackResult = await forwardWithFallback(primaryAttempt, fallbackAttempts, forwardBody);
   } catch (e: unknown) {
     await logRequest({
       orgId: ctx.orgId, projectId: ctx.projectId,
-      modelRequested, modelUsed: modelToUse, providerUsed: ctx.provider,
+      modelRequested, modelUsed: modelToUse, providerUsed: providerToUse,
       taskType: classification.taskType,
-      inputTokens: 0, outputTokens: 0, costUSD: 0, savingsUSD: 0,
-      latencyMs: Date.now() - startMs, success: false,
-      errorCode: "network_error", callsite,
+      inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, costUSD: 0, savingsUSD: 0,
+      latencyMs: Date.now() - startMs, success: false, errorCode: "network_error",
+      callsite, fallbackCount: fallbackAttempts.length,
+      experimentId: experimentAssignment?.experimentId,
+      experimentVariant: experimentAssignment?.variant,
     });
     return NextResponse.json({ error: { message: e instanceof Error ? e.message : "Provider unreachable", type: "api_error" } }, { status: 502 });
   }
 
+  const { response: providerResponse, providerUsed: finalProvider, modelUsed: finalModel, fallbackCount } = fallbackResult;
   const latencyMs = Date.now() - startMs;
 
   if (isStream) {
@@ -249,17 +287,21 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: { message: "Empty stream body", type: "api_error" } }, { status: 502 });
     }
 
-    // Intercept the stream to extract token usage from the final [DONE] chunk,
-    // then log the request. The caller receives an unmodified byte stream.
-    const headers = new Headers({
+    const streamHeaders = new Headers({
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
-      "x-sr-model-used": modelToUse,
+      "x-sr-model-used": finalModel,
       "x-sr-model-requested": modelRequested,
       "x-sr-task-type": classification.taskType,
+      "x-sr-provider-used": finalProvider,
+      ...(fallbackCount > 0 ? { "x-sr-fallback-count": fallbackCount.toString() } : {}),
       ...(routingDecision ? {
         "x-sr-savings-usd": routingDecision.estimatedSavingsUSD.toFixed(6),
         "x-sr-savings-pct": routingDecision.estimatedSavingsPct.toString(),
+      } : {}),
+      ...(experimentAssignment ? {
+        "x-sr-experiment-id": experimentAssignment.experimentId,
+        "x-sr-experiment-variant": experimentAssignment.variant,
       } : {}),
     });
 
@@ -270,7 +312,6 @@ export async function POST(req: NextRequest) {
     const transformStream = new TransformStream({
       transform(chunk, controller) {
         controller.enqueue(chunk);
-        // Parse SSE lines for usage data in the final chunk
         const text = decoder.decode(chunk, { stream: true });
         for (const line of text.split("\n")) {
           if (!line.startsWith("data: ")) continue;
@@ -284,21 +325,23 @@ export async function POST(req: NextRequest) {
         }
       },
       flush() {
-        const costUSD = estimateCost(modelToUse, usageInputTokens, usageOutputTokens);
+        const costUSD = estimateCost(finalModel, usageInputTokens, usageOutputTokens);
         logRequest({
           orgId: ctx.orgId, projectId: ctx.projectId,
-          modelRequested, modelUsed: modelToUse, providerUsed: ctx.provider,
+          modelRequested, modelUsed: finalModel, providerUsed: finalProvider,
           taskType: classification.taskType,
-          inputTokens: usageInputTokens, outputTokens: usageOutputTokens,
+          inputTokens: usageInputTokens, outputTokens: usageOutputTokens, cacheReadTokens: 0,
           costUSD, savingsUSD: routingDecision?.estimatedSavingsUSD ?? 0,
-          latencyMs: Date.now() - startMs, success: true, callsite,
+          latencyMs: Date.now() - startMs, success: true, callsite, fallbackCount,
+          experimentId: experimentAssignment?.experimentId,
+          experimentVariant: experimentAssignment?.variant,
         });
       },
     });
 
     return new Response(providerResponse.body.pipeThrough(transformStream), {
       status: providerResponse.status,
-      headers,
+      headers: streamHeaders,
     });
   }
 
@@ -312,42 +355,57 @@ export async function POST(req: NextRequest) {
   const usage = responseData.usage ?? {};
   const inputTokens = usage.prompt_tokens ?? classification.estimatedInputTokens;
   const outputTokens = usage.completion_tokens ?? classification.estimatedOutputTokens;
-  const costUSD = estimateCost(modelToUse, inputTokens, outputTokens);
+  const cacheReadTokens = extractCacheReadTokens(responseData, finalProvider);
+  const costUSD = estimateCost(finalModel, inputTokens, outputTokens);
   const savingsUSD = routingDecision?.estimatedSavingsUSD ?? 0;
 
   await logRequest({
     orgId: ctx.orgId, projectId: ctx.projectId,
-    modelRequested, modelUsed: modelToUse, providerUsed: ctx.provider,
+    modelRequested, modelUsed: finalModel, providerUsed: finalProvider,
     taskType: classification.taskType,
-    inputTokens, outputTokens, costUSD, savingsUSD,
-    latencyMs, success: true, callsite,
+    inputTokens, outputTokens, cacheReadTokens, costUSD, savingsUSD,
+    latencyMs, success: true, callsite, fallbackCount,
+    experimentId: experimentAssignment?.experimentId,
+    experimentVariant: experimentAssignment?.variant,
   });
 
-  // Inject SmartRouter metadata
   const enriched = {
     ...responseData,
-    model: modelToUse,
+    model: finalModel,
     _smartrouter: {
       model_requested: modelRequested,
-      model_used: modelToUse,
+      model_used: finalModel,
+      provider_used: finalProvider,
       task_type: classification.taskType,
       task_confidence: classification.confidence,
       cost_usd: parseFloat(costUSD.toFixed(8)),
       savings_usd: parseFloat(savingsUSD.toFixed(8)),
       savings_pct: routingDecision?.estimatedSavingsPct ?? 0,
+      cache_read_tokens: cacheReadTokens,
+      fallback_count: fallbackCount,
       latency_ms: latencyMs,
       candidates: routingDecision?.candidates?.slice(0, 3) ?? [],
+      experiment: experimentAssignment
+        ? { id: experimentAssignment.experimentId, variant: experimentAssignment.variant }
+        : null,
     },
   };
 
   return NextResponse.json(enriched, {
     headers: {
-      "x-sr-model-used": modelToUse,
+      "x-sr-model-used": finalModel,
       "x-sr-model-requested": modelRequested,
       "x-sr-task-type": classification.taskType,
+      "x-sr-provider-used": finalProvider,
       "x-sr-cost-usd": costUSD.toFixed(8),
       "x-sr-savings-usd": savingsUSD.toFixed(8),
       "x-sr-savings-pct": (routingDecision?.estimatedSavingsPct ?? 0).toString(),
+      ...(fallbackCount > 0 ? { "x-sr-fallback-count": fallbackCount.toString() } : {}),
+      ...(cacheReadTokens > 0 ? { "x-sr-cache-read-tokens": cacheReadTokens.toString() } : {}),
+      ...(experimentAssignment ? {
+        "x-sr-experiment-id": experimentAssignment.experimentId,
+        "x-sr-experiment-variant": experimentAssignment.variant,
+      } : {}),
     },
   });
 }

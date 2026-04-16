@@ -215,11 +215,42 @@ export const requestLogs = pgTable("request_logs", {
   errorCode: text("error_code"),
   // Optional: file:line from X-Source-File header sent by the app (Phase 3 attribution)
   callsite: text("callsite"),
+  // Phase 5: prompt caching + fallback tracking
+  cacheReadTokens: integer("cache_read_tokens").notNull().default(0), // Anthropic cache_read_input_tokens
+  fallbackCount: integer("fallback_count").notNull().default(0),      // how many providers were tried before success
+  // Phase 5: A/B experiment reference
+  experimentId: text("experiment_id"),        // null if not part of an experiment
+  experimentVariant: text("experiment_variant"), // "control" | "treatment"
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   index("request_logs_org_created_idx").on(t.orgId, t.createdAt),
   index("request_logs_org_model_idx").on(t.orgId, t.modelUsed),
   index("request_logs_callsite_idx").on(t.orgId, t.callsite),
+  index("request_logs_experiment_idx").on(t.orgId, t.experimentId),
+]);
+
+// ── Routing Experiments (A/B testing) ─────────────────────────────────────────
+// Per-project A/B experiments: split traffic between two model configs.
+
+export const routingExperiments = pgTable("routing_experiments", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: text("org_id").notNull(),
+  projectId: text("project_id").notNull(),
+  name: text("name").notNull(),
+  description: text("description"),
+  // Control = current routing config; Treatment = alternate model/tier
+  controlModel: text("control_model").notNull(),           // modelId or tier alias
+  treatmentModel: text("treatment_model").notNull(),
+  splitPct: integer("split_pct").notNull().default(50),    // % traffic → treatment (0–100)
+  taskTypes: text("task_types").array().default(sql`'{}'`), // empty = all task types
+  status: text("status").notNull().default("active"),      // active|paused|concluded
+  winnerVariant: text("winner_variant"),                   // null until concluded
+  startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+  concludedAt: timestamp("concluded_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index("routing_experiments_org_idx").on(t.orgId, t.status),
+  index("routing_experiments_project_idx").on(t.projectId),
 ]);
 
 // ── Typed jsonb shapes ────────────────────────────────────────────────────────
@@ -234,6 +265,11 @@ export interface ProjectRoutingConfig {
   dailyBudgetUsd?: number | null;                        // null = no limit
   monthlyBudgetUsd?: number | null;
   budgetAction?: "block" | "downgrade";                  // default: "downgrade"
+  // Phase 5: advanced routing
+  fallbackProviders?: ProviderName[];                    // ordered fallback chain on 429/5xx
+  promptCaching?: boolean;                               // inject cache_control for Anthropic (default: true)
+  latencyWeight?: number;                                // 0–1; how much to weight latency vs cost (default: 0)
+  abExperimentId?: string | null;                        // active A/B experiment for this project
 }
 
 // ── Model Pricing (live, updated by cron every 6h) ───────────────────────────
@@ -294,3 +330,5 @@ export type RequestLog = typeof requestLogs.$inferSelect;
 export type NewRequestLog = typeof requestLogs.$inferInsert;
 export type ModelPricing = typeof modelPricing.$inferSelect;
 export type OrgWebhook = typeof orgWebhooks.$inferSelect;
+export type RoutingExperiment = typeof routingExperiments.$inferSelect;
+export type NewRoutingExperiment = typeof routingExperiments.$inferInsert;

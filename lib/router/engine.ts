@@ -3,6 +3,7 @@
  */
 import type { TaskType, QualityTier, RoutingDecision, RoutingCandidate } from "@/types/router";
 import { PRICING_CATALOG, QUALITY_SCORES, estimateCost, type PricingEntry } from "./pricing";
+import { latencyPenalty, type LatencyStats } from "./latency";
 
 // Quality floor per tier (minimum quality score required)
 const QUALITY_FLOORS: Record<QualityTier, number> = {
@@ -33,6 +34,9 @@ interface EngineParams {
   requiresVision: boolean;
   requiresJsonMode: boolean;
   requiresFunctionCalling: boolean;
+  // Phase 5: latency-aware routing
+  latencyWeight?: number;       // 0–1; 0 = pure cost, 1 = pure latency avoidance
+  latencyStats?: LatencyStats[]; // pass in pre-fetched stats for the org
 }
 
 function scoreCandidate(
@@ -40,7 +44,9 @@ function scoreCandidate(
   taskType: TaskType,
   tier: QualityTier,
   inputTokens: number,
-  outputTokens: number
+  outputTokens: number,
+  latencyWeight = 0,
+  stats: LatencyStats[] = [],
 ): RoutingCandidate | null {
   const qualityMap = QUALITY_SCORES[model.modelId] ?? QUALITY_SCORES[Object.keys(QUALITY_SCORES).find((k) => model.modelId.startsWith(k)) ?? ""] ?? null;
   if (!qualityMap) return null;
@@ -52,7 +58,9 @@ function scoreCandidate(
   const cost = estimateCost(model.modelId, inputTokens, outputTokens);
   // Score = quality / (cost * 1000 + 0.01) — higher is better, cost in millicents
   const costEfficiency = quality / (cost * 1000 + 0.01);
-  const finalScore = Math.round(costEfficiency * 10) / 10;
+  // Latency penalty in [0,1] — subtract weighted penalty from score
+  const penalty = latencyWeight > 0 ? latencyPenalty(model.modelId, model.provider, stats) * latencyWeight * 50 : 0;
+  const finalScore = Math.round((costEfficiency - penalty) * 10) / 10;
 
   return {
     modelId: model.modelId,
@@ -61,7 +69,7 @@ function scoreCandidate(
     estimatedCostUSD: cost,
     costEfficiencyScore: costEfficiency,
     finalScore,
-    reason: `quality=${quality}, cost=$${cost.toFixed(6)}, tier=${tier}`,
+    reason: `quality=${quality}, cost=$${cost.toFixed(6)}, tier=${tier}${penalty > 0 ? `, latency_penalty=${penalty.toFixed(2)}` : ""}`,
   };
 }
 
@@ -69,6 +77,7 @@ export function route(params: EngineParams): RoutingDecision {
   const {
     modelRequested, taskType, estimatedInputTokens, estimatedOutputTokens,
     qualityTier, allowedProviders, taskOverrides, requiresVision, requiresJsonMode, requiresFunctionCalling,
+    latencyWeight = 0, latencyStats = [],
   } = params;
 
   // Check for task-specific override first
@@ -105,7 +114,7 @@ export function route(params: EngineParams): RoutingDecision {
     // JSON mode only supported by certain models
     if (requiresJsonMode && !["openai", "google"].includes(model.provider) && !model.modelId.includes("mixtral")) continue;
 
-    const candidate = scoreCandidate(model, taskType, qualityTier, estimatedInputTokens, estimatedOutputTokens);
+    const candidate = scoreCandidate(model, taskType, qualityTier, estimatedInputTokens, estimatedOutputTokens, latencyWeight, latencyStats);
     if (candidate) candidates.push(candidate);
   }
 
