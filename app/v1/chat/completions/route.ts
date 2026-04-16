@@ -11,6 +11,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { classifyRequest } from "@/lib/router/classifier";
 import { route, VIRTUAL_MODELS } from "@/lib/router/engine";
 import { estimateCost, getPricing } from "@/lib/router/pricing";
+import { db, schema } from "@/lib/db";
 import type { QualityTier } from "@/types/router";
 
 // Provider base URLs
@@ -98,11 +99,24 @@ async function logRequest(data: {
   success: boolean;
   errorCode?: string;
 }) {
-  // Phase 1: console log only. Phase 2: write to Neon Postgres.
-  if (process.env.NODE_ENV === "development") {
-    console.log("[SmartRouter]", JSON.stringify(data));
-  }
-  // see dbbuilder-org/AI-Cost-Central#1 for Phase 2 DB persistence
+  // Fire-and-forget — never block the response path
+  db.insert(schema.requestLogs).values({
+    orgId: data.orgId,
+    projectId: data.projectId,
+    modelRequested: data.modelRequested,
+    modelUsed: data.modelUsed,
+    providerUsed: data.providerUsed,
+    taskType: data.taskType,
+    inputTokens: data.inputTokens,
+    outputTokens: data.outputTokens,
+    costUsd: data.costUSD.toFixed(8),
+    savingsUsd: data.savingsUSD.toFixed(8),
+    latencyMs: data.latencyMs,
+    success: data.success,
+    errorCode: data.errorCode,
+  }).catch((err: unknown) => {
+    console.warn("[SmartRouter] request log insert failed:", err instanceof Error ? err.message : err);
+  });
 }
 
 export async function POST(req: NextRequest) {
@@ -182,9 +196,15 @@ export async function POST(req: NextRequest) {
   const latencyMs = Date.now() - startMs;
 
   if (isStream) {
-    // Pass through stream directly
+    if (!providerResponse.body) {
+      return NextResponse.json({ error: { message: "Empty stream body", type: "api_error" } }, { status: 502 });
+    }
+
+    // Intercept the stream to extract token usage from the final [DONE] chunk,
+    // then log the request. The caller receives an unmodified byte stream.
     const headers = new Headers({
       "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
       "x-sr-model-used": modelToUse,
       "x-sr-model-requested": modelRequested,
       "x-sr-task-type": classification.taskType,
@@ -193,7 +213,44 @@ export async function POST(req: NextRequest) {
         "x-sr-savings-pct": routingDecision.estimatedSavingsPct.toString(),
       } : {}),
     });
-    return new Response(providerResponse.body, { status: providerResponse.status, headers });
+
+    const decoder = new TextDecoder();
+    let usageInputTokens = classification.estimatedInputTokens;
+    let usageOutputTokens = classification.estimatedOutputTokens;
+
+    const transformStream = new TransformStream({
+      transform(chunk, controller) {
+        controller.enqueue(chunk);
+        // Parse SSE lines for usage data in the final chunk
+        const text = decoder.decode(chunk, { stream: true });
+        for (const line of text.split("\n")) {
+          if (!line.startsWith("data: ")) continue;
+          const payload = line.slice(6).trim();
+          if (payload === "[DONE]") continue;
+          try {
+            const parsed = JSON.parse(payload) as { usage?: { prompt_tokens?: number; completion_tokens?: number } };
+            if (parsed.usage?.prompt_tokens) usageInputTokens = parsed.usage.prompt_tokens;
+            if (parsed.usage?.completion_tokens) usageOutputTokens = parsed.usage.completion_tokens;
+          } catch { /* non-JSON chunk — ignore */ }
+        }
+      },
+      flush() {
+        const costUSD = estimateCost(modelToUse, usageInputTokens, usageOutputTokens);
+        logRequest({
+          orgId: ctx.orgId, projectId: ctx.projectId,
+          modelRequested, modelUsed: modelToUse, providerUsed: ctx.provider,
+          taskType: classification.taskType,
+          inputTokens: usageInputTokens, outputTokens: usageOutputTokens,
+          costUSD, savingsUSD: routingDecision?.estimatedSavingsUSD ?? 0,
+          latencyMs: Date.now() - startMs, success: true,
+        });
+      },
+    });
+
+    return new Response(providerResponse.body.pipeThrough(transformStream), {
+      status: providerResponse.status,
+      headers,
+    });
   }
 
   // Non-streaming: parse and annotate

@@ -191,6 +191,32 @@ export const auditLog = pgTable("audit_log", {
   index("audit_log_org_created_idx").on(t.orgId, t.createdAt),
 ]);
 
+// ── SmartRouter Request Logs ──────────────────────────────────────────────────
+// One row per proxied request. Tracks actual model used, tokens, cost, savings.
+// Fire-and-forget insert from the SmartRouter proxy — never blocks the response.
+// Retention policy: keep 90 days (enforced by a periodic cron, not DB trigger).
+
+export const requestLogs = pgTable("request_logs", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: text("org_id").notNull(),                       // Clerk org ID (no FK — avoids join cost on hot path)
+  projectId: text("project_id").notNull(),               // SmartRouter project ID
+  modelRequested: text("model_requested").notNull(),      // Model the caller asked for
+  modelUsed: text("model_used").notNull(),                // Model actually forwarded to
+  providerUsed: text("provider_used").notNull(),          // openai|anthropic|google|groq|mistral
+  taskType: text("task_type").notNull(),                  // chat|coding|reasoning|extraction|…
+  inputTokens: integer("input_tokens").notNull().default(0),
+  outputTokens: integer("output_tokens").notNull().default(0),
+  costUsd: numeric("cost_usd", { precision: 12, scale: 8 }).notNull().default("0"),
+  savingsUsd: numeric("savings_usd", { precision: 12, scale: 8 }).notNull().default("0"),
+  latencyMs: integer("latency_ms").notNull().default(0),
+  success: boolean("success").notNull().default(true),
+  errorCode: text("error_code"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index("request_logs_org_created_idx").on(t.orgId, t.createdAt),
+  index("request_logs_org_model_idx").on(t.orgId, t.modelUsed),
+]);
+
 // ── Type exports ──────────────────────────────────────────────────────────────
 
 export type Organization = typeof organizations.$inferSelect;
@@ -204,3 +230,5 @@ export type UsageRow = typeof usageRows.$inferSelect;
 export type Annotation = typeof annotations.$inferSelect;
 export type Invitation = typeof invitations.$inferSelect;
 export type AuditLogEntry = typeof auditLog.$inferSelect;
+export type RequestLog = typeof requestLogs.$inferSelect;
+export type NewRequestLog = typeof requestLogs.$inferInsert;
