@@ -50,8 +50,8 @@ export async function GET() {
 
 export async function PUT(req: NextRequest) {
   try {
-    const { orgId } = await requireAuth();
-    await requireRole(["owner", "admin"]);
+    const { orgId, userId } = await requireAuth();
+    await requireRole(orgId, userId, "admin");
 
     const body = await req.json() as Partial<NotificationConfig>;
 

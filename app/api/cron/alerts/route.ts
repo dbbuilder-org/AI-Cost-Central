@@ -60,12 +60,12 @@ export async function GET(req: NextRequest) {
     let pushResult: { sent: number; failed: number } = { sent: 0, failed: 0 };
     let slackResult: { sent: boolean; error?: string } = { sent: false };
     if (alerts.length > 0) {
-      [emailResult, pushResult, slackResult] = await Promise.all([
+      [emailResult, pushResult, slackResult] = (await Promise.all([
         sendAlertEmail(alerts),
         sendPushNotifications(alerts),
         sendSlackAlerts(alerts),
         deliverWebhookEvent("alert.fired", { alerts, count: alerts.length }).catch(() => undefined),
-      ]) as [typeof emailResult, typeof pushResult, typeof slackResult];
+      ])).slice(0, 3) as [typeof emailResult, typeof pushResult, typeof slackResult];
     }
 
     return NextResponse.json({
