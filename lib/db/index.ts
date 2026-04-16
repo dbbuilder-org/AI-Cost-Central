@@ -33,4 +33,4 @@ export const db = new Proxy({} as ReturnType<typeof drizzle<typeof schema>>, {
 });
 
 export { schema };
-export type { Organization, OrgMember, Division, ApiKey, Project, UsageRow as DbUsageRow, Annotation, Invitation, AuditLogEntry } from "./schema";
+export type { Organization, OrgMember, Division, ApiKey, Project, UsageRow as DbUsageRow, Annotation, Invitation, AuditLogEntry, RequestLog } from "./schema";
