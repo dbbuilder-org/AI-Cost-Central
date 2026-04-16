@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Key, Users, GitBranch, CreditCard, Shield } from "lucide-react";
+import { Key, Users, GitBranch, CreditCard, Shield, Bell } from "lucide-react";
 
 const SETTINGS_SECTIONS = [
   {
@@ -20,6 +20,12 @@ const SETTINGS_SECTIONS = [
     icon: GitBranch,
     title: "Divisions",
     description: "Organize your team into divisions or teams. Set budget limits per division.",
+  },
+  {
+    href: "/settings/notifications",
+    icon: Bell,
+    title: "Notifications",
+    description: "Configure Slack alerts, email recipients, and anomaly detection thresholds.",
   },
   {
     href: "/billing",
