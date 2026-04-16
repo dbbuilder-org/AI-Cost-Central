@@ -50,7 +50,8 @@ describe("checkBudget (mocked DB)", () => {
 
   it("returns not exceeded when spend is below daily limit", async () => {
     const { db } = await import("@/lib/db");
-    (db.where as ReturnType<typeof vi.fn>).mockResolvedValue([{ total: "3.50" }]);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ((db as any).where as ReturnType<typeof vi.fn>).mockResolvedValue([{ total: "3.50" }]);
     const { checkBudget } = await import("@/lib/router/budget");
     const result = await checkBudget("org_1", "proj_1", { dailyBudgetUsd: 10 });
     expect(result.exceeded).toBe(false);
@@ -58,7 +59,8 @@ describe("checkBudget (mocked DB)", () => {
 
   it("returns exceeded when spend meets or exceeds daily limit", async () => {
     const { db } = await import("@/lib/db");
-    (db.where as ReturnType<typeof vi.fn>).mockResolvedValue([{ total: "10.00" }]);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ((db as any).where as ReturnType<typeof vi.fn>).mockResolvedValue([{ total: "10.00" }]);
     const { checkBudget } = await import("@/lib/router/budget");
     const result = await checkBudget("org_1", "proj_1", { dailyBudgetUsd: 10, budgetAction: "block" });
     expect(result.exceeded).toBe(true);
@@ -67,7 +69,8 @@ describe("checkBudget (mocked DB)", () => {
 
   it("defaults to downgrade action when budgetAction not set", async () => {
     const { db } = await import("@/lib/db");
-    (db.where as ReturnType<typeof vi.fn>).mockResolvedValue([{ total: "15.00" }]);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ((db as any).where as ReturnType<typeof vi.fn>).mockResolvedValue([{ total: "15.00" }]);
     const { checkBudget } = await import("@/lib/router/budget");
     const result = await checkBudget("org_1", "proj_1", { dailyBudgetUsd: 10 });
     expect(result.exceeded).toBe(true);
@@ -76,7 +79,8 @@ describe("checkBudget (mocked DB)", () => {
 
   it("fails open when DB throws (does not exceed)", async () => {
     const { db } = await import("@/lib/db");
-    (db.where as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("DB timeout"));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ((db as any).where as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("DB timeout"));
     const { checkBudget } = await import("@/lib/router/budget");
     const result = await checkBudget("org_1", "proj_1", { dailyBudgetUsd: 10 });
     expect(result.exceeded).toBe(false);

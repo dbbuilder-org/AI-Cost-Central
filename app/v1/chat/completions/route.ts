@@ -270,7 +270,7 @@ export async function POST(req: NextRequest) {
   const primaryAttempt: FallbackAttempt = {
     provider: providerToUse,
     providerUrl: PROVIDER_URLS[providerToUse] ?? PROVIDER_URLS.openai,
-    providerKey: primaryKey,
+    providerKey: primaryKey ?? "",
     modelId: modelToUse,
   };
 
