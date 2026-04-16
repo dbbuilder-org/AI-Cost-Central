@@ -106,6 +106,8 @@ export const projects = pgTable("projects", {
   tags: text("tags").array().default(sql`'{}'`),
   budgetUsd: numeric("budget_usd", { precision: 12, scale: 4 }),
   color: text("color"),                                // Hex color for UI
+  // SmartRouter per-project routing rules (qualityTier, allowedProviders, taskOverrides, budgets)
+  routingConfig: jsonb("routing_config").default({}),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   index("projects_org_idx").on(t.orgId),
@@ -216,6 +218,20 @@ export const requestLogs = pgTable("request_logs", {
   index("request_logs_org_created_idx").on(t.orgId, t.createdAt),
   index("request_logs_org_model_idx").on(t.orgId, t.modelUsed),
 ]);
+
+// ── Typed jsonb shapes ────────────────────────────────────────────────────────
+
+import type { QualityTier, TaskType, ProviderName } from "@/types/router";
+
+export interface ProjectRoutingConfig {
+  qualityTier?: QualityTier;                             // default: "balanced"
+  autoRoute?: boolean;                                   // default: true
+  allowedProviders?: ProviderName[];                     // empty = all
+  taskOverrides?: Partial<Record<TaskType, string>>;     // taskType → modelId
+  dailyBudgetUsd?: number | null;                        // null = no limit
+  monthlyBudgetUsd?: number | null;
+  budgetAction?: "block" | "downgrade";                  // default: "downgrade"
+}
 
 // ── Type exports ──────────────────────────────────────────────────────────────
 

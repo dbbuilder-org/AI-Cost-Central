@@ -8,6 +8,7 @@ import { RecommendationCards } from "@/components/dashboard/RecommendationCards"
 import { AlertsPanel } from "@/components/dashboard/AlertsPanel";
 import { RequestEfficiency } from "@/components/dashboard/RequestEfficiency";
 import { SmartRouterCard } from "@/components/dashboard/SmartRouterCard";
+import { RoutingDecisionsTable } from "@/components/dashboard/RoutingDecisionsTable";
 import { SpendOverTime } from "@/components/charts/SpendOverTime";
 import { CostByModel } from "@/components/charts/CostByModel";
 import { CostByKey } from "@/components/charts/CostByKey";
@@ -143,6 +144,9 @@ export default function DashboardPage() {
               <TabsTrigger value="smartrouter" className="data-[state=active]:bg-gray-800 text-gray-400 data-[state=active]:text-white">
                 SmartRouter
               </TabsTrigger>
+              <TabsTrigger value="routing-decisions" className="data-[state=active]:bg-gray-800 text-gray-400 data-[state=active]:text-white">
+                Decisions
+              </TabsTrigger>
               {recommendations.length > 0 && (
                 <TabsTrigger value="recommendations" className="data-[state=active]:bg-gray-800 text-gray-400 data-[state=active]:text-white">
                   Recommendations
@@ -181,6 +185,10 @@ export default function DashboardPage() {
 
             <TabsContent value="smartrouter" className="mt-4">
               <SmartRouterCard />
+            </TabsContent>
+
+            <TabsContent value="routing-decisions" className="mt-4">
+              <RoutingDecisionsTable />
             </TabsContent>
 
             {recommendations.length > 0 && (

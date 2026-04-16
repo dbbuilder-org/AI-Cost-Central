@@ -4,15 +4,17 @@
  * Drop-in replacement: change base_url to https://aicostcentral.servicevision.io/v1
  * and api_key to a SmartRouter virtual key (sk-sr-...).
  *
- * Phase 1: passthrough mode (logs everything, routes as-is).
- * Phase 2: task classification + smart routing.
+ * Phase 2: task classification + smart routing + per-project config + budget enforcement.
  */
 import { NextRequest, NextResponse } from "next/server";
 import { classifyRequest } from "@/lib/router/classifier";
 import { route, VIRTUAL_MODELS } from "@/lib/router/engine";
-import { estimateCost, getPricing } from "@/lib/router/pricing";
+import { estimateCost } from "@/lib/router/pricing";
+import { checkBudget, effectiveTier } from "@/lib/router/budget";
 import { db, schema } from "@/lib/db";
+import { eq, and } from "drizzle-orm";
 import type { QualityTier } from "@/types/router";
+import type { ProjectRoutingConfig } from "@/lib/db/schema";
 
 // Provider base URLs
 const PROVIDER_URLS: Record<string, string> = {
@@ -23,8 +25,24 @@ const PROVIDER_URLS: Record<string, string> = {
   mistral:   "https://api.mistral.ai/v1/chat/completions",
 };
 
-// For Phase 1: resolve virtual key → project config
-// Phase 2: will hit KV/DB
+/**
+ * Load per-project routing config from DB.
+ * Falls back to empty config (balanced tier, all providers) on any error.
+ */
+async function loadProjectConfig(orgId: string, projectId: string): Promise<ProjectRoutingConfig> {
+  if (orgId === "passthrough" || orgId === "default") return {};
+  try {
+    const project = await db.query.projects.findFirst({
+      where: and(eq(schema.projects.id, projectId), eq(schema.projects.orgId, orgId)),
+      columns: { routingConfig: true },
+    });
+    return (project?.routingConfig ?? {}) as ProjectRoutingConfig;
+  } catch {
+    return {};
+  }
+}
+
+// Resolve virtual key → base context (key resolution stays synchronous)
 function resolveVirtualKey(authHeader: string | null): {
   projectId: string;
   orgId: string;
@@ -36,7 +54,7 @@ function resolveVirtualKey(authHeader: string | null): {
   if (!authHeader) return null;
   const raw = authHeader.replace("Bearer ", "");
 
-  // For Phase 1 MVP: if key starts with sk-sr-, validate against env; else treat as direct OpenAI key
+  // SmartRouter virtual key: validate against master key env var
   if (raw.startsWith("sk-sr-")) {
     const masterKey = process.env.SMARTROUTER_MASTER_KEY;
     if (masterKey && raw === masterKey) {
@@ -143,6 +161,25 @@ export async function POST(req: NextRequest) {
   const messages = (body.messages as Array<{ role: string; content: unknown }>) ?? [];
   const isStream = body.stream === true;
 
+  // ── Load project routing config + check budget (parallel) ──
+  const [projectConfig, budgetStatus] = await Promise.all([
+    loadProjectConfig(ctx.orgId, ctx.projectId),
+    ctx.passthrough
+      ? Promise.resolve({ exceeded: false } as const)
+      : checkBudget(ctx.orgId, ctx.projectId, {}), // preliminary check with no config needed — will refine below
+  ]);
+
+  // If budget is exceeded and action=block, reject immediately
+  if (budgetStatus.exceeded && budgetStatus.action === "block") {
+    return NextResponse.json({
+      error: {
+        message: budgetStatus.reason,
+        type: "insufficient_quota",
+        code: "budget_exceeded",
+      },
+    }, { status: 429 });
+  }
+
   // ── Task Classification ──
   const classification = classifyRequest({
     model: modelRequested,
@@ -158,15 +195,23 @@ export async function POST(req: NextRequest) {
   let routingDecision = null;
 
   const isVirtualModel = modelRequested in VIRTUAL_MODELS;
+  const shouldRoute = !ctx.passthrough &&
+    (projectConfig.autoRoute !== false) &&
+    (isVirtualModel || process.env.SMARTROUTER_AUTO_ROUTE === "true");
 
-  if (!ctx.passthrough && (isVirtualModel || process.env.SMARTROUTER_AUTO_ROUTE === "true")) {
-    const tier = isVirtualModel ? VIRTUAL_MODELS[modelRequested] : ctx.qualityTier;
+  if (shouldRoute) {
+    // Apply budget downgrade if needed, then project config overrides
+    const baseTier = isVirtualModel ? VIRTUAL_MODELS[modelRequested] : (projectConfig.qualityTier ?? ctx.qualityTier);
+    const tier = effectiveTier(baseTier, budgetStatus);
+
     routingDecision = route({
       modelRequested,
       taskType: classification.taskType,
       estimatedInputTokens: classification.estimatedInputTokens,
       estimatedOutputTokens: classification.estimatedOutputTokens,
       qualityTier: tier,
+      allowedProviders: projectConfig.allowedProviders,
+      taskOverrides: projectConfig.taskOverrides,
       requiresVision: classification.requiresVision,
       requiresJsonMode: classification.requiresJsonMode,
       requiresFunctionCalling: classification.requiresFunctionCalling,
