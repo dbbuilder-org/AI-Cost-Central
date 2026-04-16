@@ -49,4 +49,4 @@ next-env.d.ts
 /mobile/node_modules
 /mobile/.expo
 /mobile/dist
-keys/
+/keys/
