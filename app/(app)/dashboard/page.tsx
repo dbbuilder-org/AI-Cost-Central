@@ -9,6 +9,7 @@ import { AlertsPanel } from "@/components/dashboard/AlertsPanel";
 import { RequestEfficiency } from "@/components/dashboard/RequestEfficiency";
 import { SmartRouterCard } from "@/components/dashboard/SmartRouterCard";
 import { RoutingDecisionsTable } from "@/components/dashboard/RoutingDecisionsTable";
+import { CodeAttributionCard } from "@/components/dashboard/CodeAttributionCard";
 import { SpendOverTime } from "@/components/charts/SpendOverTime";
 import { CostByModel } from "@/components/charts/CostByModel";
 import { CostByKey } from "@/components/charts/CostByKey";
@@ -147,6 +148,9 @@ export default function DashboardPage() {
               <TabsTrigger value="routing-decisions" className="data-[state=active]:bg-gray-800 text-gray-400 data-[state=active]:text-white">
                 Decisions
               </TabsTrigger>
+              <TabsTrigger value="attribution" className="data-[state=active]:bg-gray-800 text-gray-400 data-[state=active]:text-white">
+                Attribution
+              </TabsTrigger>
               {recommendations.length > 0 && (
                 <TabsTrigger value="recommendations" className="data-[state=active]:bg-gray-800 text-gray-400 data-[state=active]:text-white">
                   Recommendations
@@ -189,6 +193,10 @@ export default function DashboardPage() {
 
             <TabsContent value="routing-decisions" className="mt-4">
               <RoutingDecisionsTable />
+            </TabsContent>
+
+            <TabsContent value="attribution" className="mt-4">
+              <CodeAttributionCard />
             </TabsContent>
 
             {recommendations.length > 0 && (

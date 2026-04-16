@@ -213,10 +213,13 @@ export const requestLogs = pgTable("request_logs", {
   latencyMs: integer("latency_ms").notNull().default(0),
   success: boolean("success").notNull().default(true),
   errorCode: text("error_code"),
+  // Optional: file:line from X-Source-File header sent by the app (Phase 3 attribution)
+  callsite: text("callsite"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   index("request_logs_org_created_idx").on(t.orgId, t.createdAt),
   index("request_logs_org_model_idx").on(t.orgId, t.modelUsed),
+  index("request_logs_callsite_idx").on(t.orgId, t.callsite),
 ]);
 
 // ── Typed jsonb shapes ────────────────────────────────────────────────────────

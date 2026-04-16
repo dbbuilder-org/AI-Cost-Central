@@ -116,6 +116,7 @@ async function logRequest(data: {
   latencyMs: number;
   success: boolean;
   errorCode?: string;
+  callsite?: string;
 }) {
   // Fire-and-forget — never block the response path
   db.insert(schema.requestLogs).values({
@@ -132,6 +133,7 @@ async function logRequest(data: {
     latencyMs: data.latencyMs,
     success: data.success,
     errorCode: data.errorCode,
+    callsite: data.callsite,
   }).catch((err: unknown) => {
     console.warn("[SmartRouter] request log insert failed:", err instanceof Error ? err.message : err);
   });
@@ -160,6 +162,8 @@ export async function POST(req: NextRequest) {
   const modelRequested = (body.model as string) ?? "gpt-4o-mini";
   const messages = (body.messages as Array<{ role: string; content: unknown }>) ?? [];
   const isStream = body.stream === true;
+  // X-Source-File: "path/to/file.ts:42" — optional callsite header from app (Phase 3)
+  const callsite = req.headers.get("x-source-file") ?? undefined;
 
   // ── Load project routing config + check budget (parallel) ──
   const [projectConfig, budgetStatus] = await Promise.all([
@@ -233,7 +237,7 @@ export async function POST(req: NextRequest) {
       taskType: classification.taskType,
       inputTokens: 0, outputTokens: 0, costUSD: 0, savingsUSD: 0,
       latencyMs: Date.now() - startMs, success: false,
-      errorCode: "network_error",
+      errorCode: "network_error", callsite,
     });
     return NextResponse.json({ error: { message: e instanceof Error ? e.message : "Provider unreachable", type: "api_error" } }, { status: 502 });
   }
@@ -287,7 +291,7 @@ export async function POST(req: NextRequest) {
           taskType: classification.taskType,
           inputTokens: usageInputTokens, outputTokens: usageOutputTokens,
           costUSD, savingsUSD: routingDecision?.estimatedSavingsUSD ?? 0,
-          latencyMs: Date.now() - startMs, success: true,
+          latencyMs: Date.now() - startMs, success: true, callsite,
         });
       },
     });
@@ -316,7 +320,7 @@ export async function POST(req: NextRequest) {
     modelRequested, modelUsed: modelToUse, providerUsed: ctx.provider,
     taskType: classification.taskType,
     inputTokens, outputTokens, costUSD, savingsUSD,
-    latencyMs, success: true,
+    latencyMs, success: true, callsite,
   });
 
   // Inject SmartRouter metadata
