@@ -30,6 +30,11 @@ interface ExperimentWithResults {
   results: Record<string, ExperimentResult>;
 }
 
+interface Project {
+  id: string;
+  name: string;
+}
+
 const STATUS_BADGE: Record<string, string> = {
   active:    "bg-green-100 text-green-800",
   paused:    "bg-amber-100 text-amber-800",
@@ -40,11 +45,20 @@ function fmtCost(n: number) {
   return n.toLocaleString("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 4 });
 }
 
-function ExperimentRow({ exp }: { exp: ExperimentWithResults }) {
+function ExperimentRow({
+  exp,
+  onStatusChange,
+  onDelete,
+}: {
+  exp: ExperimentWithResults;
+  onStatusChange: (id: string, status: string, winnerVariant?: string) => Promise<void>;
+  onDelete: (id: string) => Promise<void>;
+}) {
   const { experiment: e, results } = exp;
   const ctrl = results["control"];
   const trt = results["treatment"];
   const hasData = ctrl || trt;
+  const [acting, setActing] = useState(false);
 
   const costDelta = ctrl && trt
     ? ((trt.avgCostUsd - ctrl.avgCostUsd) / (ctrl.avgCostUsd || 1)) * 100
@@ -54,14 +68,19 @@ function ExperimentRow({ exp }: { exp: ExperimentWithResults }) {
     ? trt.avgLatencyMs - ctrl.avgLatencyMs
     : null;
 
+  async function act(fn: () => Promise<void>) {
+    setActing(true);
+    try { await fn(); } finally { setActing(false); }
+  }
+
   return (
-    <div className="border rounded-lg p-3 space-y-2">
+    <div className="border border-gray-200 rounded-lg p-3 space-y-2">
       <div className="flex items-start justify-between gap-2">
-        <div>
-          <p className="text-sm font-medium text-slate-900">{e.name}</p>
+        <div className="min-w-0">
+          <p className="text-sm font-medium text-slate-900 truncate">{e.name}</p>
           {e.description && <p className="text-xs text-slate-500">{e.description}</p>}
         </div>
-        <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${STATUS_BADGE[e.status] ?? STATUS_BADGE.concluded}`}>
+        <span className={`text-xs px-2 py-0.5 rounded-full font-medium shrink-0 ${STATUS_BADGE[e.status] ?? STATUS_BADGE.concluded}`}>
           {e.status}
         </span>
       </div>
@@ -106,9 +125,85 @@ function ExperimentRow({ exp }: { exp: ExperimentWithResults }) {
           Winner: {e.winnerVariant} ({e.winnerVariant === "control" ? e.controlModel : e.treatmentModel})
         </p>
       )}
+
+      {/* Action buttons */}
+      {e.status !== "concluded" && (
+        <div className="flex gap-1.5 pt-1 flex-wrap">
+          {e.status === "active" && (
+            <button
+              disabled={acting}
+              onClick={() => act(() => onStatusChange(e.id, "paused"))}
+              className="text-xs px-2 py-1 rounded border border-amber-300 text-amber-700 bg-amber-50 hover:bg-amber-100 disabled:opacity-50"
+            >
+              Pause
+            </button>
+          )}
+          {e.status === "paused" && (
+            <button
+              disabled={acting}
+              onClick={() => act(() => onStatusChange(e.id, "active"))}
+              className="text-xs px-2 py-1 rounded border border-green-300 text-green-700 bg-green-50 hover:bg-green-100 disabled:opacity-50"
+            >
+              Resume
+            </button>
+          )}
+          {hasData && (
+            <>
+              <button
+                disabled={acting}
+                onClick={() => act(() => onStatusChange(e.id, "concluded", "control"))}
+                className="text-xs px-2 py-1 rounded border border-slate-300 text-slate-600 bg-slate-50 hover:bg-slate-100 disabled:opacity-50"
+              >
+                Control wins
+              </button>
+              <button
+                disabled={acting}
+                onClick={() => act(() => onStatusChange(e.id, "concluded", "treatment"))}
+                className="text-xs px-2 py-1 rounded border border-slate-300 text-slate-600 bg-slate-50 hover:bg-slate-100 disabled:opacity-50"
+              >
+                Treatment wins
+              </button>
+            </>
+          )}
+          {!hasData && (
+            <button
+              disabled={acting}
+              onClick={() => act(() => onStatusChange(e.id, "concluded"))}
+              className="text-xs px-2 py-1 rounded border border-slate-300 text-slate-600 bg-slate-50 hover:bg-slate-100 disabled:opacity-50"
+            >
+              Conclude
+            </button>
+          )}
+          <button
+            disabled={acting}
+            onClick={() => { if (confirm("Delete this experiment?")) act(() => onDelete(e.id)); }}
+            className="text-xs px-2 py-1 rounded border border-red-200 text-red-600 bg-red-50 hover:bg-red-100 disabled:opacity-50"
+          >
+            Delete
+          </button>
+        </div>
+      )}
     </div>
   );
 }
+
+interface CreateForm {
+  projectId: string;
+  name: string;
+  description: string;
+  controlModel: string;
+  treatmentModel: string;
+  splitPct: number;
+}
+
+const BLANK_FORM: CreateForm = {
+  projectId: "",
+  name: "",
+  description: "",
+  controlModel: "",
+  treatmentModel: "",
+  splitPct: 50,
+};
 
 export function ABExperimentsCard() {
   const [experiments, setExperiments] = useState<ExperimentWithResults[]>([]);
@@ -116,7 +211,13 @@ export function ABExperimentsCard() {
   const [error, setError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<"active" | "all">("active");
 
-  useEffect(() => {
+  const [showForm, setShowForm] = useState(false);
+  const [form, setForm] = useState<CreateForm>(BLANK_FORM);
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
+
+  function loadExperiments() {
     setLoading(true);
     setError(null);
     const params = statusFilter === "active" ? "?status=active" : "";
@@ -124,7 +225,6 @@ export function ABExperimentsCard() {
       .then((r) => r.json())
       .then(async (d) => {
         if (d.error) throw new Error(d.error);
-        // Fetch results for each experiment in parallel
         const withResults = await Promise.all(
           (d.experiments as Experiment[]).map(async (exp) => {
             const res = await fetch(`/api/smartrouter/experiments/${exp.id}`);
@@ -136,7 +236,59 @@ export function ABExperimentsCard() {
       })
       .catch((e: unknown) => setError(e instanceof Error ? e.message : "Failed to load"))
       .finally(() => setLoading(false));
-  }, [statusFilter]);
+  }
+
+  useEffect(() => { loadExperiments(); }, [statusFilter]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (showForm && projects.length === 0) {
+      fetch("/api/org/projects")
+        .then((r) => r.json())
+        .then((d) => setProjects((d.projects as Project[]) ?? []))
+        .catch(() => {});
+    }
+  }, [showForm]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function handleCreate(e: React.FormEvent) {
+    e.preventDefault();
+    setCreating(true);
+    setCreateError(null);
+    try {
+      const res = await fetch("/api/smartrouter/experiments", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          ...form,
+          splitPct: Number(form.splitPct),
+        }),
+      });
+      const data = await res.json() as { error?: string };
+      if (!res.ok) throw new Error(data.error ?? "Create failed");
+      setShowForm(false);
+      setForm(BLANK_FORM);
+      loadExperiments();
+    } catch (err) {
+      setCreateError(err instanceof Error ? err.message : "Create failed");
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  async function handleStatusChange(id: string, status: string, winnerVariant?: string) {
+    const body: Record<string, unknown> = { status };
+    if (winnerVariant) body.winnerVariant = winnerVariant;
+    await fetch(`/api/smartrouter/experiments/${id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    loadExperiments();
+  }
+
+  async function handleDelete(id: string) {
+    await fetch(`/api/smartrouter/experiments/${id}`, { method: "DELETE" });
+    loadExperiments();
+  }
 
   return (
     <Card>
@@ -156,10 +308,99 @@ export function ABExperimentsCard() {
               {f}
             </button>
           ))}
+          <button
+            onClick={() => { setShowForm((v) => !v); setCreateError(null); }}
+            className="text-xs px-2 py-1 rounded border bg-indigo-600 text-white border-indigo-600 hover:bg-indigo-700 ml-1"
+          >
+            {showForm ? "Cancel" : "+ New"}
+          </button>
         </div>
       </CardHeader>
 
       <CardContent className="space-y-3">
+        {/* Create form */}
+        {showForm && (
+          <form onSubmit={handleCreate} className="border border-indigo-200 rounded-lg p-3 space-y-3 bg-indigo-50">
+            <p className="text-xs font-semibold text-indigo-800">New A/B Experiment</p>
+            <div className="space-y-2">
+              <div>
+                <label className="text-xs text-slate-600">Project *</label>
+                <select
+                  required
+                  value={form.projectId}
+                  onChange={(e) => setForm((f) => ({ ...f, projectId: e.target.value }))}
+                  className="w-full mt-0.5 bg-white border border-slate-300 rounded px-2 py-1 text-xs text-slate-800 focus:outline-none focus:ring-1 focus:ring-indigo-400"
+                >
+                  <option value="">Select project…</option>
+                  {projects.map((p) => (
+                    <option key={p.id} value={p.id}>{p.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs text-slate-600">Name *</label>
+                <input
+                  required
+                  value={form.name}
+                  onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+                  placeholder="e.g. GPT-4.1-mini vs Claude Haiku"
+                  className="w-full mt-0.5 bg-white border border-slate-300 rounded px-2 py-1 text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-indigo-400"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-slate-600">Description</label>
+                <input
+                  value={form.description}
+                  onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
+                  placeholder="Optional notes"
+                  className="w-full mt-0.5 bg-white border border-slate-300 rounded px-2 py-1 text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-indigo-400"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-xs text-slate-600">Control model *</label>
+                  <input
+                    required
+                    value={form.controlModel}
+                    onChange={(e) => setForm((f) => ({ ...f, controlModel: e.target.value }))}
+                    placeholder="gpt-4.1-mini"
+                    className="w-full mt-0.5 bg-white border border-slate-300 rounded px-2 py-1 text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-indigo-400"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-slate-600">Treatment model *</label>
+                  <input
+                    required
+                    value={form.treatmentModel}
+                    onChange={(e) => setForm((f) => ({ ...f, treatmentModel: e.target.value }))}
+                    placeholder="claude-haiku-4-5-20251001"
+                    className="w-full mt-0.5 bg-white border border-slate-300 rounded px-2 py-1 text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-indigo-400"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="text-xs text-slate-600">Treatment traffic % (1–99, default 50)</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={99}
+                  value={form.splitPct}
+                  onChange={(e) => setForm((f) => ({ ...f, splitPct: parseInt(e.target.value, 10) || 50 }))}
+                  className="w-full mt-0.5 bg-white border border-slate-300 rounded px-2 py-1 text-xs text-slate-800 focus:outline-none focus:ring-1 focus:ring-indigo-400"
+                />
+              </div>
+            </div>
+            {createError && <p className="text-xs text-red-600">{createError}</p>}
+            <button
+              type="submit"
+              disabled={creating}
+              className="w-full py-1.5 text-xs font-medium bg-indigo-600 text-white rounded hover:bg-indigo-700 disabled:opacity-50"
+            >
+              {creating ? "Creating…" : "Create experiment"}
+            </button>
+          </form>
+        )}
+
         {loading && (
           <div className="space-y-2">
             {Array.from({ length: 2 }).map((_, i) => <Skeleton key={i} className="h-32 w-full" />)}
@@ -172,14 +413,18 @@ export function ABExperimentsCard() {
           <div className="py-6 text-center text-slate-500 text-sm">
             <p className="font-medium mb-1">No {statusFilter === "active" ? "active " : ""}experiments</p>
             <p className="text-xs">
-              Create an experiment via the API to split traffic between two models
-              and compare cost, latency, and quality side by side.
+              Click <strong>+ New</strong> to split traffic between two models and compare cost, latency, and quality.
             </p>
           </div>
         )}
 
         {!loading && !error && experiments.map((exp) => (
-          <ExperimentRow key={exp.experiment.id} exp={exp} />
+          <ExperimentRow
+            key={exp.experiment.id}
+            exp={exp}
+            onStatusChange={handleStatusChange}
+            onDelete={handleDelete}
+          />
         ))}
       </CardContent>
     </Card>
