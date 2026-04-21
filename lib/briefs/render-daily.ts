@@ -38,10 +38,10 @@ function trendBars(byDay: DailyBriefData["trailing7d"]["byDay"]): string {
       const pct = (d.costUSD / max) * 100;
       const color = isToday ? "#6366f1" : "#374151";
       const textColor = isToday ? "#a5b4fc" : "#6b7280";
-      return `<td style="text-align:center;padding:0 3px;vertical-align:bottom">
-        <div style="background:${color};width:28px;height:${Math.max(4, Math.round(pct * 0.6))}px;border-radius:3px 3px 0 0;margin:0 auto"></div>
-        <div style="font-size:9px;color:${textColor};margin-top:3px">${fmtDate(d.date)}</div>
-        <div style="font-size:10px;color:${textColor}">$${d.costUSD.toFixed(0)}</div>
+      return `<td style="text-align:center;padding:0 2px;vertical-align:bottom">
+        <div style="background:${color};width:22px;height:${Math.max(3, Math.round(pct * 0.5))}px;border-radius:2px 2px 0 0;margin:0 auto"></div>
+        <div style="font-size:8px;color:${textColor};margin-top:2px;white-space:nowrap">${fmtDate(d.date)}</div>
+        <div style="font-size:9px;color:${textColor};white-space:nowrap">$${d.costUSD.toFixed(2)}</div>
       </td>`;
     })
     .join("");
@@ -54,14 +54,14 @@ function providerRows(byProvider: DailyBriefData["yesterday"]["byProvider"]): st
     .map((p) => {
       const color = PROVIDER_COLOR[p.provider] ?? "#9ca3af";
       return `<tr style="border-bottom:1px solid #1f2937">
-        <td style="padding:8px 12px">${providerBadge(p.provider)}</td>
-        <td style="padding:8px 12px;color:#e5e7eb;font-weight:600">$${p.costUSD.toFixed(2)}</td>
-        <td style="padding:8px 12px;color:#6b7280;font-size:12px">${p.requests.toLocaleString()} reqs</td>
-        <td style="padding:8px 12px;color:#9ca3af;font-size:11px;width:120px">
-          <div style="background:#1f2937;border-radius:3px;height:6px">
-            <div style="background:${color};border-radius:3px;height:6px;width:${Math.round(p.pctOfTotal)}%"></div>
+        <td style="padding:6px 10px">${providerBadge(p.provider)}</td>
+        <td style="padding:6px 10px;color:#e5e7eb;font-weight:600;font-size:12px;white-space:nowrap">$${p.costUSD.toFixed(4)}</td>
+        <td style="padding:6px 10px;color:#6b7280;font-size:11px;white-space:nowrap">${p.requests.toLocaleString()} reqs</td>
+        <td style="padding:6px 10px;color:#9ca3af;font-size:10px;width:90px">
+          <div style="background:#1f2937;border-radius:3px;height:4px">
+            <div style="background:${color};border-radius:3px;height:4px;width:${Math.round(p.pctOfTotal)}%"></div>
           </div>
-          <span style="font-size:10px">${p.pctOfTotal.toFixed(0)}%</span>
+          <span style="font-size:9px">${p.pctOfTotal.toFixed(0)}%</span>
         </td>
       </tr>`;
     })
@@ -72,14 +72,14 @@ function modelRows(topModels: DailyBriefData["yesterday"]["topModels"]): string 
   return topModels
     .map((m, i) => `
       <tr style="border-bottom:1px solid #1f2937">
-        <td style="padding:8px 12px;color:#6b7280;font-size:12px">${i + 1}</td>
-        <td style="padding:8px 12px">
+        <td style="padding:5px 6px;color:#6b7280;font-size:10px;text-align:center">${i + 1}</td>
+        <td style="padding:5px 8px;max-width:180px">
           ${providerBadge(m.provider)}
-          <span style="color:#e5e7eb;margin-left:6px;font-size:13px">${m.model}</span>
+          <span style="color:#e5e7eb;margin-left:4px;font-size:11px;word-break:break-word">${m.model}</span>
         </td>
-        <td style="padding:8px 12px;color:#fff;font-weight:600;text-align:right">$${m.costUSD.toFixed(2)}</td>
-        <td style="padding:8px 12px;color:#6b7280;font-size:12px;text-align:right">${m.requests.toLocaleString()}</td>
-        <td style="padding:8px 12px;color:#9ca3af;font-size:11px;text-align:right">$${m.costPerRequest.toFixed(4)}/req</td>
+        <td style="padding:5px 8px;color:#fff;font-weight:600;font-size:11px;text-align:right;white-space:nowrap">$${m.costUSD.toFixed(4)}</td>
+        <td style="padding:5px 8px;color:#6b7280;font-size:10px;text-align:right;white-space:nowrap">${m.requests.toLocaleString()}</td>
+        <td style="padding:5px 8px;color:#9ca3af;font-size:10px;text-align:right;white-space:nowrap">$${m.costPerRequest.toFixed(5)}</td>
       </tr>`)
     .join("");
 }
@@ -88,12 +88,12 @@ function keyRows(topKeys: DailyBriefData["yesterday"]["topKeys"]): string {
   return topKeys
     .map((k) => `
       <tr style="border-bottom:1px solid #1f2937">
-        <td style="padding:8px 12px">
+        <td style="padding:5px 8px">
           ${providerBadge(k.provider)}
-          <span style="color:#e5e7eb;margin-left:6px;font-size:13px">${k.apiKeyName}</span>
+          <span style="color:#e5e7eb;margin-left:4px;font-size:11px">${k.apiKeyName}</span>
         </td>
-        <td style="padding:8px 12px;color:#fff;font-weight:600;text-align:right">$${k.costUSD.toFixed(2)}</td>
-        <td style="padding:8px 12px;color:#6b7280;font-size:12px;text-align:right">${k.requests.toLocaleString()} reqs</td>
+        <td style="padding:5px 8px;color:#fff;font-weight:600;font-size:11px;text-align:right;white-space:nowrap">$${k.costUSD.toFixed(4)}</td>
+        <td style="padding:5px 8px;color:#6b7280;font-size:10px;text-align:right;white-space:nowrap">${k.requests.toLocaleString()} reqs</td>
       </tr>`)
     .join("");
 }
@@ -168,11 +168,11 @@ export function renderDailyEmail(
       <table style="width:100%;border-collapse:collapse">
         <thead>
           <tr style="background:#0f172a">
-            <th style="padding:8px 12px;text-align:left;color:#6b7280;font-size:10px;font-weight:500">#</th>
-            <th style="padding:8px 12px;text-align:left;color:#6b7280;font-size:10px;font-weight:500">Model</th>
-            <th style="padding:8px 12px;text-align:right;color:#6b7280;font-size:10px;font-weight:500">Cost</th>
-            <th style="padding:8px 12px;text-align:right;color:#6b7280;font-size:10px;font-weight:500">Requests</th>
-            <th style="padding:8px 12px;text-align:right;color:#6b7280;font-size:10px;font-weight:500">Cost/req</th>
+            <th style="padding:5px 6px;text-align:center;color:#6b7280;font-size:9px;font-weight:500">#</th>
+            <th style="padding:5px 8px;text-align:left;color:#6b7280;font-size:9px;font-weight:500">Model</th>
+            <th style="padding:5px 8px;text-align:right;color:#6b7280;font-size:9px;font-weight:500;white-space:nowrap">Cost</th>
+            <th style="padding:5px 8px;text-align:right;color:#6b7280;font-size:9px;font-weight:500;white-space:nowrap">Reqs</th>
+            <th style="padding:5px 8px;text-align:right;color:#6b7280;font-size:9px;font-weight:500;white-space:nowrap">$/req</th>
           </tr>
         </thead>
         <tbody>${modelRows(data.yesterday.topModels)}</tbody>

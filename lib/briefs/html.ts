@@ -34,10 +34,10 @@ export function card(content: string, style = ""): string {
 }
 
 export function metricCard(label: string, value: string, sub?: string): string {
-  return `<div style="background:#111827;border:1px solid #1f2937;border-radius:8px;padding:14px;text-align:center;flex:1;min-width:110px">
-    <div style="font-size:22px;font-weight:700;color:#fff">${value}</div>
-    ${sub ? `<div style="font-size:11px;color:#6b7280;margin:2px 0">${sub}</div>` : ""}
-    <div style="font-size:10px;color:#4b5563;margin-top:2px;text-transform:uppercase;letter-spacing:0.05em">${label}</div>
+  return `<div style="background:#111827;border:1px solid #1f2937;border-radius:8px;padding:10px 8px;text-align:center;flex:1;min-width:90px">
+    <div style="font-size:16px;font-weight:700;color:#fff;white-space:nowrap">${value}</div>
+    ${sub ? `<div style="font-size:10px;color:#6b7280;margin:1px 0;white-space:nowrap">${sub}</div>` : ""}
+    <div style="font-size:9px;color:#4b5563;margin-top:1px;text-transform:uppercase;letter-spacing:0.04em">${label}</div>
   </div>`;
 }
 
@@ -51,12 +51,22 @@ export function miniBar(pct: number, color: string): string {
 
 export function htmlShell(title: string, body: string, footerUrl: string): string {
   return `<!DOCTYPE html>
-<html>
-<head><meta charset="utf-8"><title>${title}</title></head>
-<body style="margin:0;padding:0;background:#030712;font-family:system-ui,-apple-system,sans-serif;color:#f9fafb">
-  <div style="max-width:680px;margin:0 auto;padding:24px">
+<html lang="en" style="-webkit-text-size-adjust:100%;-ms-text-size-adjust:100%">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="x-apple-disable-message-reformatting">
+  <title>${title}</title>
+  <style>
+    * { -webkit-text-size-adjust: none !important; text-size-adjust: none !important; }
+    body { margin:0;padding:0 }
+    td, th { font-size: inherit }
+  </style>
+</head>
+<body style="margin:0;padding:0;background:#030712;font-family:system-ui,-apple-system,sans-serif;color:#f9fafb;-webkit-text-size-adjust:none;text-size-adjust:none">
+  <div style="max-width:640px;margin:0 auto;padding:16px">
     ${body}
-    <div style="text-align:center;color:#374151;font-size:11px;margin-top:20px">
+    <div style="text-align:center;color:#374151;font-size:10px;margin-top:16px">
       AICostCentral · <a href="${footerUrl}" style="color:#4f46e5;text-decoration:none">Open Dashboard</a>
       · <a href="${footerUrl}/settings" style="color:#4f46e5;text-decoration:none">Manage subscriptions</a>
     </div>
