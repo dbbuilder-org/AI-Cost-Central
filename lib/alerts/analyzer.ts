@@ -1,12 +1,35 @@
 /**
- * AI enrichment layer — takes raw DetectionResults, sends them to
- * Claude Haiku for plain-language explanation and investigation steps.
+ * AI enrichment layer — takes raw DetectionResults plus full key context
+ * (purpose, reference documents, code scan findings) and sends them to
+ * Claude for plain-language, code-aware anomaly explanation.
  *
  * Falls back gracefully if ANTHROPIC_API_KEY is missing or the API fails.
+ *
+ * Context priority for Claude:
+ *   1. Code scan findings  — the most actionable signal (exact call sites + risks)
+ *   2. Reference documents — runbooks, architecture docs, expected patterns
+ *   3. Key purpose         — declared intent written by the key's owner
+ *   4. Raw anomaly metrics — numbers, baseline, change %
  */
 
 import Anthropic from "@anthropic-ai/sdk";
 import type { Alert, DetectionResult } from "@/types/alerts";
+import type { CodeScanSummary } from "@/lib/codeScanning";
+
+export interface KeyContextEntry {
+  purpose: string | null;
+  displayName: string | null;
+  provider: string;
+  /** Excerpts from uploaded reference documents (first ~1500 chars each) */
+  docExcerpts: Array<{ fileName: string; excerpt: string }>;
+  /** Code scan result — null if no repos linked or scan not yet run */
+  codeScan: CodeScanSummary | null;
+}
+
+/** Maps providerKeyId → enrichment context */
+export type KeyContextMap = Record<string, KeyContextEntry>;
+
+// ── Anthropic client ──────────────────────────────────────────────────────────
 
 let _client: Anthropic | null = null;
 
@@ -16,9 +39,10 @@ function getClient(): Anthropic | null {
   return _client;
 }
 
+// ── ID generation ─────────────────────────────────────────────────────────────
+
 function makeId(result: DetectionResult, date: string): string {
   const raw = `${result.type}:${result.provider}:${result.subject}:${date}`;
-  // Simple deterministic hash
   let h = 0;
   for (let i = 0; i < raw.length; i++) {
     h = (Math.imul(31, h) + raw.charCodeAt(i)) | 0;
@@ -26,12 +50,13 @@ function makeId(result: DetectionResult, date: string): string {
   return Math.abs(h).toString(36);
 }
 
+// ── Fallback (no API key or API failure) ──────────────────────────────────────
+
 function buildFallbackAlert(result: DetectionResult, date: string): Alert {
-  const detail = buildFallbackDetail(result);
   return {
     ...result,
     id: makeId(result, date),
-    detail,
+    detail: buildFallbackDetail(result),
     investigateSteps: buildFallbackSteps(result),
     detectedAt: date,
   };
@@ -41,17 +66,17 @@ function buildFallbackDetail(r: DetectionResult): string {
   const model = r.models?.[0] ?? "unknown model";
   switch (r.type) {
     case "cost_spike":
-      return `API key "${r.subject}" (${r.provider}) showed a significant cost increase. The daily cost reached $${r.value.toFixed(2)}, which is ${r.changePct.toFixed(0)}% above the $${r.baseline.toFixed(2)} baseline. The primary driver was ${model}. This may indicate a traffic surge, an inefficient prompt, or a new workflow on this key.`;
+      return `API key "${r.subject}" (${r.provider}) showed a significant cost increase. The daily cost reached $${r.value.toFixed(2)}, which is ${r.changePct.toFixed(0)}% above the $${r.baseline.toFixed(2)} baseline. The primary driver was ${model}.`;
     case "cost_drop":
       return `API key "${r.subject}" (${r.provider}) spend is notably down to $${r.value.toFixed(2)} vs the $${r.baseline.toFixed(2)} daily baseline. This may reflect an intentional change, reduced usage, or a possible integration issue worth verifying.`;
     case "volume_spike":
       return `API key "${r.subject}" (${r.provider}) received ${r.value.toLocaleString()} requests today — a ${r.changePct.toFixed(0)}% increase over the ${Math.round(r.baseline).toLocaleString()} requests/day baseline. Primary model: ${model}.`;
     case "key_model_shift":
       return r.models && r.models.length > 1
-        ? `API key "${r.subject}" (${r.provider}) shifted its primary model from ${r.models[1]} to ${r.models[0]}. This change may explain any associated cost movement — different models have different pricing and performance characteristics.`
-        : `API key "${r.subject}" (${r.provider}) used ${model} for the first time today, spending $${r.value.toFixed(4)}. This model was not seen in prior usage history for this key.`;
+        ? `API key "${r.subject}" (${r.provider}) shifted its primary model from ${r.models[1]} to ${r.models[0]}.`
+        : `API key "${r.subject}" (${r.provider}) used ${model} for the first time today.`;
     case "new_key":
-      return `A new API key "${r.subject}" (${r.provider}) was detected with first usage recorded recently. Total spend so far: $${r.value.toFixed(2)}${model !== "unknown model" ? `, primarily via ${model}` : ""}.`;
+      return `A new API key "${r.subject}" (${r.provider}) was detected. Total spend so far: $${r.value.toFixed(2)}.`;
   }
 }
 
@@ -74,46 +99,95 @@ function buildFallbackSteps(r: DetectionResult): string[] {
     case "key_model_shift":
       return r.models && r.models.length > 1
         ? [
-            `Check git history for the project using "${r.subject}" for any changes to the model parameter (${r.models[1]} → ${r.models[0]}).`,
-            `Compare pricing between ${r.models[1]} and ${r.models[0]} to estimate the ongoing cost impact of this switch.`,
-            `If unintentional, revert the model setting and investigate who or what made the change.`,
+            `Check git history for the project using "${r.subject}" for changes to the model parameter (${r.models[1]} → ${r.models[0]}).`,
+            `Compare pricing between ${r.models[1]} and ${r.models[0]} to estimate the ongoing cost impact.`,
+            `If unintentional, revert the model setting and audit recent deployments.`,
           ]
         : [
-            `Find the codebase or service using "${r.subject}" and check for recent commits that introduced ${model}.`,
-            `Verify the model name is intentional — AI-generated code sometimes defaults to more expensive models.`,
-            `Review ${model} pricing on ${r.provider} to confirm this fits your cost targets for this key.`,
+            `Find the codebase using "${r.subject}" and check for recent commits that introduced ${model}.`,
+            `Verify the model choice is intentional — AI-generated code sometimes defaults to expensive models.`,
+            `Review ${model} pricing on ${r.provider} to confirm this fits your cost targets.`,
           ];
     case "new_key":
       return [
         `Confirm that "${r.subject}" was created intentionally by a member of your team.`,
-        `If unexpected, rotate or revoke the key immediately and audit who has admin access on ${r.provider}.`,
-        `Tag the key with its project name in AICostCentral settings so future anomalies are easier to attribute.`,
+        `If unexpected, rotate or revoke the key immediately and audit ${r.provider} admin access.`,
+        `Tag the key with its project name in AICostCentral so future anomalies are easier to attribute.`,
       ];
   }
 }
 
-const SYSTEM_PROMPT = `You are an AI spending analyst helping engineering teams understand unusual patterns in their AI API usage.
-All anomalies are reported at the API key level — the subject is always an API key, not a model.
-Model information is provided as context to explain why the key's cost or volume changed.
-When given anomaly detection results, provide:
-1. A clear 2-3 sentence business explanation focused on the API key and what changed about its behavior
-2. Exactly 3 specific, actionable investigation steps that start from the API key and lead to the root cause
+// ── Context block builder ─────────────────────────────────────────────────────
 
-Keep explanations factual and concise. Focus on practical impact. Never use jargon.
-Respond in JSON format.`;
+function buildKeyContextBlock(
+  keyId: string,
+  ctx: KeyContextEntry | undefined
+): string {
+  if (!ctx) return `No context available for key ${keyId}.`;
+
+  const lines: string[] = [];
+
+  if (ctx.purpose) {
+    lines.push(`PURPOSE: ${ctx.purpose}`);
+  }
+
+  if (ctx.docExcerpts.length > 0) {
+    lines.push("\nREFERENCE DOCUMENTS:");
+    for (const doc of ctx.docExcerpts) {
+      lines.push(`[${doc.fileName}]: ${doc.excerpt.slice(0, 800)}`);
+    }
+  }
+
+  if (ctx.codeScan && ctx.codeScan.totalCallSites > 0) {
+    lines.push("\nCODE ANALYSIS (GitHub):");
+    lines.push(ctx.codeScan.plainSummary);
+    if (ctx.codeScan.hardcodedKeyFound) {
+      lines.push("\n🚨 CRITICAL: Hardcoded API key string found in source code.");
+    }
+    if (ctx.codeScan.criticalRisks.length > 0) {
+      lines.push("\nCRITICAL RISKS:");
+      for (const r of ctx.codeScan.criticalRisks) lines.push(`  - ${r}`);
+    }
+  } else if (ctx.codeScan) {
+    lines.push("\nCODE ANALYSIS: No AI call sites found in linked repos.");
+  } else {
+    lines.push("\nCODE ANALYSIS: No linked repositories.");
+  }
+
+  return lines.join("\n");
+}
+
+// ── System prompt ─────────────────────────────────────────────────────────────
+
+const SYSTEM_PROMPT = `You are an AI API cost intelligence analyst embedded in AICostCentral.
+
+You receive anomaly detections for API keys alongside full context about how each key is actually used:
+- The key's declared PURPOSE (written by the team that owns it)
+- REFERENCE DOCUMENTS (runbooks, architecture docs, expected behavior)
+- CODE ANALYSIS from GitHub (exact call sites, trigger types, risk patterns found by static analysis)
+
+YOUR JOB: Determine whether each anomaly is EXPECTED (a known pattern from the code/purpose) or UNEXPECTED (a new behavior, broken integration, or active risk). Use the code evidence specifically — if a call site is inside a loop and cost spiked, cite that loop. If the key's purpose says "batch job runs Sunday" and there's a cost drop on Monday, that's likely expected.
+
+Focus on:
+1. Cross-referencing the anomaly metrics with the code's actual call patterns and trigger types
+2. Identifying whether code-level risks (loops, no max_tokens, user input) could explain the anomaly
+3. Flagging hardcoded keys, recursive agents, or unbounded loops as immediate action items
+
+Respond in JSON format only.`;
+
+// ── Main export ───────────────────────────────────────────────────────────────
 
 export async function enrichWithAI(
   detections: DetectionResult[],
-  todayStr: string
+  todayStr: string,
+  keyContextMap: KeyContextMap = {}
 ): Promise<Alert[]> {
   const client = getClient();
 
-  // If no client, return fallback alerts for all detections
   if (!client || detections.length === 0) {
     return detections.map((d) => buildFallbackAlert(d, todayStr));
   }
 
-  // Only send top 5 most severe to AI (cost savings)
   const severityOrder = { critical: 0, warning: 1, info: 2 };
   const topDetections = [...detections]
     .sort((a, b) => severityOrder[a.severity] - severityOrder[b.severity])
@@ -121,24 +195,38 @@ export async function enrichWithAI(
   const restDetections = detections.filter((d) => !topDetections.includes(d));
 
   try {
-    const prompt = topDetections.map((d, i) =>
-      `Alert ${i + 1}: [${d.severity.toUpperCase()}] ${d.type}\n` +
-      `Provider: ${d.provider}, Subject: ${d.subject}\n` +
-      `Value: ${d.value.toFixed(2)}, Baseline: ${d.baseline.toFixed(2)}, Change: ${d.changePct.toFixed(0)}%\n` +
-      `Summary: ${d.message}`
-    ).join("\n\n");
+    const anomalyBlocks = topDetections.map((d, i) => {
+      const ctx = d.apiKeyId ? keyContextMap[d.apiKeyId] : undefined;
+      const contextBlock = buildKeyContextBlock(d.apiKeyId ?? d.subject, ctx);
+
+      return [
+        `--- ANOMALY ${i + 1} ---`,
+        `Type: ${d.type} | Severity: ${d.severity.toUpperCase()}`,
+        `Key: "${d.subject}" (${d.provider})`,
+        `Today: $${d.value.toFixed(4)} | Baseline: $${d.baseline.toFixed(4)} | Change: ${d.changePct.toFixed(0)}%`,
+        d.models?.length ? `Models: ${d.models.join(" → ")}` : null,
+        `Raw summary: ${d.message}`,
+        "",
+        "KEY CONTEXT:",
+        contextBlock,
+      ]
+        .filter(Boolean)
+        .join("\n");
+    });
+
+    const userPrompt =
+      `Analyze these ${topDetections.length} API key anomaly/anomalies detected on ${todayStr}.\n` +
+      `For each provide: "detail" (2-4 sentences — is this expected or unexpected? cite code evidence) ` +
+      `and "investigateSteps" (exactly 3 specific steps referencing file names and patterns when known).\n\n` +
+      anomalyBlocks.join("\n\n") +
+      `\n\nRespond with JSON array: [{"index": 0, "detail": "...", "investigateSteps": ["step1","step2","step3"]}, ...]`;
 
     const res = await client.messages.create({
       model: "claude-haiku-4-5-20251001",
-      max_tokens: 1500,
+      max_tokens: 2000,
       temperature: 0,
       system: SYSTEM_PROMPT,
-      messages: [
-        {
-          role: "user",
-          content: `Analyze these ${topDetections.length} API usage anomalies detected on ${todayStr}. For each, provide detail and investigateSteps.\n\n${prompt}\n\nRespond with JSON array: [{"index": 0, "detail": "...", "investigateSteps": ["step1", "step2", "step3"]}, ...]`,
-        },
-      ],
+      messages: [{ role: "user", content: userPrompt }],
     });
 
     const content = res.content[0];
@@ -148,7 +236,11 @@ export async function enrichWithAI(
     const jsonStr = text.startsWith("[")
       ? text
       : text.slice(text.indexOf("["), text.lastIndexOf("]") + 1);
-    const aiResults = JSON.parse(jsonStr) as { index: number; detail: string; investigateSteps: string[] }[];
+    const aiResults = JSON.parse(jsonStr) as {
+      index: number;
+      detail: string;
+      investigateSteps: string[];
+    }[];
 
     const enriched: Alert[] = topDetections.map((detection, i) => {
       const aiResult = aiResults.find((r) => r.index === i);
@@ -162,7 +254,6 @@ export async function enrichWithAI(
       };
     });
 
-    // Fallback for the rest
     const rest = restDetections.map((d) => buildFallbackAlert(d, todayStr));
     return [...enriched, ...rest];
   } catch (err) {

@@ -173,6 +173,8 @@ export const keyContexts = pgTable("key_contexts", {
   displayName: text("display_name"),                     // human alias (overrides provider name)
   purpose: text("purpose"),                              // what is this key used for?
   githubRepos: text("github_repos").array().default(sql`'{}'`).notNull(),
+  codeScanJson: jsonb("code_scan_json"),                 // cached CodeScanSummary (from lib/codeScanning)
+  codeScanAt: timestamp("code_scan_at", { withTimezone: true }), // when last scan ran
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
