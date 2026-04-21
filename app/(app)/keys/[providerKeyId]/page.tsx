@@ -23,6 +23,7 @@ interface KeyDocument {
   fileSize: number;
   mimeType: string;
   blobUrl: string;
+  downloadUrl?: string; // presigned URL from API
   uploadedAt: string;
 }
 
@@ -331,7 +332,7 @@ export default function KeyDetailPage() {
                     <p className="text-xs text-gray-600">{formatBytes(doc.fileSize)}</p>
                   </div>
                   <a
-                    href={doc.blobUrl}
+                    href={doc.downloadUrl ?? doc.blobUrl}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="text-gray-600 hover:text-gray-400 transition-colors flex-shrink-0"

@@ -1,13 +1,14 @@
 /**
- * GET  /api/org/key-contexts/[keyId]/documents  — list documents for a key
- * POST /api/org/key-contexts/[keyId]/documents  — upload a document (multipart/form-data)
+ * GET  /api/org/key-contexts/[keyId]/documents  — list documents (with presigned download URLs)
+ * POST /api/org/key-contexts/[keyId]/documents  — upload a document via Cloudflare R2
  *
- * Requires BLOB_READ_WRITE_TOKEN env var (Vercel Blob).
+ * Requires R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ENDPOINT, R2_BUCKET env vars.
  * Accepts: PDF, Markdown, plain text, and common doc formats. Max 10MB.
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { put } from "@vercel/blob";
+import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { requireAuth, requireRole } from "@/lib/auth";
 import { db, schema } from "@/lib/db";
 import { and, eq } from "drizzle-orm";
@@ -21,6 +22,19 @@ const ALLOWED_TYPES = new Set([
   "application/msword",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 ]);
+
+function getR2Client() {
+  return new S3Client({
+    region: "auto",
+    endpoint: process.env.R2_ENDPOINT!,
+    credentials: {
+      accessKeyId: process.env.R2_ACCESS_KEY_ID!,
+      secretAccessKey: process.env.R2_SECRET_ACCESS_KEY!,
+    },
+  });
+}
+
+const BUCKET = () => process.env.R2_BUCKET!;
 
 export async function GET(
   _req: NextRequest,
@@ -41,7 +55,20 @@ export async function GET(
       )
       .orderBy(schema.keyDocuments.uploadedAt);
 
-    return NextResponse.json({ documents: docs });
+    // Generate presigned download URLs (1-hour expiry)
+    const r2 = getR2Client();
+    const withUrls = await Promise.all(
+      docs.map(async (doc) => {
+        const downloadUrl = await getSignedUrl(
+          r2,
+          new GetObjectCommand({ Bucket: BUCKET(), Key: doc.blobUrl }),
+          { expiresIn: 3600 }
+        );
+        return { ...doc, downloadUrl };
+      })
+    );
+
+    return NextResponse.json({ documents: withUrls });
   } catch (err) {
     if (err instanceof Response) return err;
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
@@ -57,9 +84,9 @@ export async function POST(
     await requireRole(orgId, userId, "admin");
     const { keyId } = await params;
 
-    if (!process.env.BLOB_READ_WRITE_TOKEN) {
+    if (!process.env.R2_ACCESS_KEY_ID) {
       return NextResponse.json(
-        { error: "Document uploads not configured (BLOB_READ_WRITE_TOKEN missing)" },
+        { error: "Document uploads not configured (R2 env vars missing)" },
         { status: 501 }
       );
     }
@@ -82,19 +109,25 @@ export async function POST(
       );
     }
 
-    // Upload to Vercel Blob
-    const blobPath = `key-docs/${orgId}/${keyId}/${Date.now()}-${file.name}`;
-    const blob = await put(blobPath, file, {
-      access: "private",
-      token: process.env.BLOB_READ_WRITE_TOKEN,
-    });
+    // Upload to R2
+    const objectKey = `key-docs/${orgId}/${keyId}/${Date.now()}-${file.name}`;
+    const r2 = getR2Client();
+    await r2.send(
+      new PutObjectCommand({
+        Bucket: BUCKET(),
+        Key: objectKey,
+        Body: Buffer.from(await file.arrayBuffer()),
+        ContentType: file.type,
+        ContentDisposition: `attachment; filename="${file.name}"`,
+      })
+    );
 
     const [doc] = await db
       .insert(schema.keyDocuments)
       .values({
         orgId,
         providerKeyId: keyId,
-        blobUrl: blob.url,
+        blobUrl: objectKey, // stores R2 object key
         fileName: file.name,
         fileSize: file.size,
         mimeType: file.type,
@@ -102,7 +135,14 @@ export async function POST(
       })
       .returning();
 
-    return NextResponse.json({ document: doc }, { status: 201 });
+    // Return with a fresh presigned URL
+    const downloadUrl = await getSignedUrl(
+      r2,
+      new GetObjectCommand({ Bucket: BUCKET(), Key: objectKey }),
+      { expiresIn: 3600 }
+    );
+
+    return NextResponse.json({ document: { ...doc, downloadUrl } }, { status: 201 });
   } catch (err) {
     if (err instanceof Response) return err;
     console.error("[key-contexts/documents POST]", err);

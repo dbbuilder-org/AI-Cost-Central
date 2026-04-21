@@ -1,13 +1,24 @@
 /**
  * DELETE /api/org/key-contexts/[keyId]/documents/[docId]
- * Removes a document from Vercel Blob and the database.
+ * Removes a document from Cloudflare R2 and the database.
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { del } from "@vercel/blob";
+import { S3Client, DeleteObjectCommand } from "@aws-sdk/client-s3";
 import { requireAuth, requireRole } from "@/lib/auth";
 import { db, schema } from "@/lib/db";
 import { and, eq } from "drizzle-orm";
+
+function getR2Client() {
+  return new S3Client({
+    region: "auto",
+    endpoint: process.env.R2_ENDPOINT!,
+    credentials: {
+      accessKeyId: process.env.R2_ACCESS_KEY_ID!,
+      secretAccessKey: process.env.R2_SECRET_ACCESS_KEY!,
+    },
+  });
+}
 
 export async function DELETE(
   _req: NextRequest,
@@ -30,11 +41,14 @@ export async function DELETE(
       return NextResponse.json({ error: "Document not found" }, { status: 404 });
     }
 
-    // Delete from blob storage if token available
-    if (process.env.BLOB_READ_WRITE_TOKEN) {
-      await del(doc.blobUrl, { token: process.env.BLOB_READ_WRITE_TOKEN }).catch(() => {
-        // Non-fatal — DB record is the source of truth
-      });
+    // Delete from R2 (blobUrl stores the object key)
+    if (process.env.R2_ACCESS_KEY_ID) {
+      const r2 = getR2Client();
+      await r2
+        .send(new DeleteObjectCommand({ Bucket: process.env.R2_BUCKET!, Key: doc.blobUrl }))
+        .catch(() => {
+          // Non-fatal — DB record is the source of truth
+        });
     }
 
     await db
