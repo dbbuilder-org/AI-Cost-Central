@@ -10,7 +10,7 @@ import { and, eq, sql } from "drizzle-orm";
 
 export async function GET(
   _req: NextRequest,
-  { params }: { params: { experimentId: string } }
+  { params }: { params: Promise<{ experimentId: string }> }
 ) {
   let orgId: string;
   try {
@@ -20,7 +20,7 @@ export async function GET(
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const { experimentId } = params;
+  const { experimentId } = await params;
 
   const [experiment] = await db
     .select()
@@ -67,7 +67,7 @@ export async function GET(
 
 export async function PATCH(
   req: NextRequest,
-  { params }: { params: { experimentId: string } }
+  { params }: { params: Promise<{ experimentId: string }> }
 ) {
   let orgId: string;
   try {
@@ -77,7 +77,7 @@ export async function PATCH(
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const { experimentId } = params;
+  const { experimentId } = await params;
   const body = await req.json().catch(() => ({})) as Record<string, unknown>;
 
   const updateFields: Record<string, unknown> = {};
@@ -107,7 +107,7 @@ export async function PATCH(
 
 export async function DELETE(
   _req: NextRequest,
-  { params }: { params: { experimentId: string } }
+  { params }: { params: Promise<{ experimentId: string }> }
 ) {
   let orgId: string;
   try {
@@ -117,7 +117,7 @@ export async function DELETE(
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const { experimentId } = params;
+  const { experimentId } = await params;
 
   const [deleted] = await db
     .delete(schema.routingExperiments)
