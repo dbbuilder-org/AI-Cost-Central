@@ -43,7 +43,7 @@ function buildFallbackDetail(r: DetectionResult): string {
     case "cost_spike":
       return `API key "${r.subject}" (${r.provider}) showed a significant cost increase. The daily cost reached $${r.value.toFixed(2)}, which is ${r.changePct.toFixed(0)}% above the $${r.baseline.toFixed(2)} baseline. The primary driver was ${model}. This may indicate a traffic surge, an inefficient prompt, or a new workflow on this key.`;
     case "cost_drop":
-      return `API key "${r.subject}" (${r.provider}) cost dropped to $${r.value.toFixed(2)} vs the $${r.baseline.toFixed(2)} baseline. This could indicate a broken integration, a deployment issue, or an intentional change to the service using this key.`;
+      return `API key "${r.subject}" (${r.provider}) spend is notably down to $${r.value.toFixed(2)} vs the $${r.baseline.toFixed(2)} daily baseline. This may reflect an intentional change, reduced usage, or a possible integration issue worth verifying.`;
     case "volume_spike":
       return `API key "${r.subject}" (${r.provider}) received ${r.value.toLocaleString()} requests today — a ${r.changePct.toFixed(0)}% increase over the ${Math.round(r.baseline).toLocaleString()} requests/day baseline. Primary model: ${model}.`;
     case "key_model_shift":
@@ -67,9 +67,9 @@ function buildFallbackSteps(r: DetectionResult): string[] {
       ];
     case "cost_drop":
       return [
-        `Verify that the service using API key "${r.subject}" is still running and actively making API calls.`,
-        `Check deployment logs for errors or configuration changes in the last 24 hours for the service tied to this key.`,
-        `Test the integration manually — confirm the key is valid and the endpoint is reachable.`,
+        `Check if the spend reduction on "${r.subject}" was intentional — a deployment change, feature flag, or traffic shift could explain it.`,
+        `If unexpected, verify the service using this key is still running and making API calls normally.`,
+        `Test the integration manually to confirm the key is valid and the endpoint is reachable.`,
       ];
     case "key_model_shift":
       return r.models && r.models.length > 1

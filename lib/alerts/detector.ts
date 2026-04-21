@@ -44,7 +44,7 @@ function determineSeverity(
   z: number
 ): AlertSeverity {
   if (type === "key_model_shift" || type === "new_key") return "info";
-  if (type === "cost_drop") return value === 0 ? "critical" : "warning";
+  if (type === "cost_drop") return "warning"; // never critical — drops are notable, not emergencies
   // cost_spike / volume_spike
   if (z > 4 || value > baseline * 5) return "critical";
   if (z > 3 || value > baseline * 3) return "warning";
@@ -163,9 +163,11 @@ export function detectCostAnomalies(
       });
     }
 
-    // Cost drop — only if key had meaningful baseline activity
+    // Cost drop — only if key had meaningful baseline activity AND cost is non-zero today.
+    // Zero-cost days are skipped: a key simply not being called that day isn't an anomaly.
     if (
       baseMean >= config.minBaselineCost &&
+      todayValue > 0 &&
       todayValue < (baseMean * config.dropMaxPctOfBaseline) / 100
     ) {
       results.push({
@@ -175,7 +177,7 @@ export function detectCostAnomalies(
         subject: keyName,
         apiKeyId: keyId,
         models: topModel ? [topModel] : [],
-        message: `"${keyName}" cost dropped to $${todayValue.toFixed(2)} (${Math.abs(changePct).toFixed(0)}% below $${baseMean.toFixed(2)} baseline — possible integration issue)`,
+        message: `"${keyName}" spend notably down to $${todayValue.toFixed(2)} (${Math.abs(changePct).toFixed(0)}% below $${baseMean.toFixed(2)} baseline — worth checking if intentional)`,
         value: todayValue,
         baseline: baseMean,
         changePct,

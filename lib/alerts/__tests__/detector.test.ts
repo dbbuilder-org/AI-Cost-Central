@@ -98,20 +98,22 @@ describe("detectCostAnomalies", () => {
     if (spike) expect(spike.severity).toMatch(/critical|warning|info/);
   });
 
-  it("detects a cost drop when today falls to near zero", () => {
+  it("detects a cost drop when today falls to near zero but is non-zero", () => {
     const rows = normalRows("gpt-4o", "openai", 10.0, 14, 0.1);
     const alerts = detectCostAnomalies(rows);
     const drops = alerts.filter((a) => a.type === "cost_drop");
     expect(drops).toHaveLength(1);
     expect(drops[0].subject).toBe("My Key");
     expect(drops[0].changePct).toBeLessThan(0);
+    expect(drops[0].severity).toBe("warning"); // never critical
   });
 
-  it("cost drop is critical when today is exactly zero", () => {
+  it("does NOT fire a cost_drop alert when today is exactly $0", () => {
+    // Zero spend = key simply not called that day, not an anomaly
     const rows = normalRows("gpt-4o", "openai", 10.0, 14, 0.0);
     const alerts = detectCostAnomalies(rows);
-    const drop = alerts.find((a) => a.type === "cost_drop");
-    expect(drop?.severity).toBe("critical");
+    const drops = alerts.filter((a) => a.type === "cost_drop");
+    expect(drops).toHaveLength(0);
   });
 
   it("does NOT alert for low-baseline keys (below minBaselineCost)", () => {
