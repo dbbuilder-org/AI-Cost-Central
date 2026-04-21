@@ -84,6 +84,18 @@ export async function GET(req: NextRequest) {
       totalCostUSD: data.yesterday.totalCostUSD,
       rowCount: rows.length,
       alertCount: alerts.length,
+      // Debug: show unique key names and alert subjects to verify key-centric grouping
+      _debug: {
+        uniqueKeys: [...new Set(rows.map((r) => `${r.apiKeyId}|${r.apiKeyName}`))],
+        alertSummaries: alerts.map((a) => ({
+          type: a.type,
+          severity: a.severity,
+          subject: a.subject,
+          apiKeyId: a.apiKeyId,
+          models: a.models,
+          message: a.message,
+        })),
+      },
       startedAt,
       finishedAt: new Date().toISOString(),
     });
