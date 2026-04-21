@@ -7,7 +7,7 @@ import {
   ChevronRight,
   CheckCircle2,
   Circle,
-  Github,
+  GitBranch,
   FileText,
 } from "lucide-react";
 
@@ -173,7 +173,7 @@ export default function KeysPage() {
                 <div className="flex items-center gap-4 flex-shrink-0 text-xs text-gray-500">
                   {repoCount > 0 && (
                     <span className="flex items-center gap-1">
-                      <Github className="w-3 h-3" />
+                      <GitBranch className="w-3 h-3" />
                       {repoCount}
                     </span>
                   )}
@@ -196,7 +196,7 @@ export default function KeysPage() {
         <p className="mt-6 text-xs text-gray-600 flex items-center gap-4">
           <span className="flex items-center gap-1.5"><CheckCircle2 className="w-3 h-3 text-green-500" /> Annotated</span>
           <span className="flex items-center gap-1.5"><Circle className="w-3 h-3 text-gray-600" /> Needs context</span>
-          <span className="flex items-center gap-1.5"><Github className="w-3 h-3" /> Repo count</span>
+          <span className="flex items-center gap-1.5"><GitBranch className="w-3 h-3" /> Repo count</span>
         </p>
       )}
     </div>

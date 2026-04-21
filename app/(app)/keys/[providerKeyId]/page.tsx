@@ -6,7 +6,7 @@ import Link from "next/link";
 import {
   ArrowLeft,
   Save,
-  Github,
+  GitBranch,
   Plus,
   X,
   Upload,
@@ -266,7 +266,7 @@ export default function KeyDetailPage() {
                   key={repo}
                   className="flex items-center gap-2 px-3 py-2 rounded-lg bg-gray-950 border border-gray-800"
                 >
-                  <Github className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" />
+                  <GitBranch className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" />
                   <span className="text-sm text-gray-200 flex-1 truncate">{repo}</span>
                   <a
                     href={repo.startsWith("http") ? repo : `https://github.com/${repo}`}
