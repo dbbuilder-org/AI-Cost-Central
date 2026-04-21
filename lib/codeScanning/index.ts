@@ -128,8 +128,9 @@ export async function scanReposForKey(
   return summary;
 }
 
-/** Returns true if a cached scan is still fresh enough to reuse */
-export function isScanFresh(scannedAt: Date | string | null, maxAgeHours = 12): boolean {
+/** Returns true if a cached scan is still fresh enough to reuse.
+ *  Default TTL is 72h — code changes far less often than once a day. */
+export function isScanFresh(scannedAt: Date | string | null, maxAgeHours = 72): boolean {
   if (!scannedAt) return false;
   const age = Date.now() - new Date(scannedAt).getTime();
   return age < maxAgeHours * 60 * 60 * 1000;

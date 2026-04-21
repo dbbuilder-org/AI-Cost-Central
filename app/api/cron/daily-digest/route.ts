@@ -2,19 +2,29 @@
  * GET /api/cron/daily-digest
  *
  * Daily anomaly + spend digest — runs at 07:00 UTC.
- * Fetches usage from provider admin APIs, runs key-centric anomaly detection,
- * enriches alerts with full context (purpose, docs, code scan), and emails results.
  *
- * Context enrichment pipeline:
- *   1. Fetch key contexts + linked repos from DB
- *   2. Fetch text document excerpts from R2 (runbooks, architecture docs)
- *   3. Run GitHub code scan for linked repos (surgical — call sites only)
- *   4. Pass everything to Claude for code-aware anomaly analysis
- *   5. Cache scan results (12h TTL) to avoid GitHub rate limits
+ * Idempotency: if today's alerts already exist in key_alerts, the expensive
+ * steps (GitHub code scan, Claude AI enrichment) are skipped entirely and
+ * the cached results are used. Safe to trigger multiple times per day.
+ *
+ * Pipeline (first run of the day only):
+ *   1. Fetch 14d usage rows from provider admin APIs
+ *   2. Detect anomalies (stateless, cheap)
+ *   3. Fetch key contexts + R2 doc excerpts for anomalous keys
+ *   4. Run GitHub code scan (72h cache in key_contexts.code_scan_json)
+ *   5. AI enrichment via Claude (key context + code findings → explanation)
+ *   6. Persist enriched alerts to key_alerts (deduplicated by key+type+date)
+ *   7. Send digest email
+ *
+ * Subsequent same-day runs:
+ *   1. Fetch usage rows (needed for spend data in email body)
+ *   2. Load today's alerts from key_alerts
+ *   3. Send digest email (no API calls to GitHub or Claude)
  */
 
 import { NextRequest, NextResponse } from "next/server";
 import { S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
+import { eq, inArray, and } from "drizzle-orm";
 import { fetchAdminUsageRows } from "@/lib/adminUsage";
 import { computeDailyData } from "@/lib/briefs/data";
 import { sendDailyBrief } from "@/lib/briefs/render-daily";
@@ -24,12 +34,11 @@ import { enrichWithAI } from "@/lib/alerts/analyzer";
 import { loadAlertConfig } from "@/lib/alerts/config";
 import { scanReposForKey, isScanFresh } from "@/lib/codeScanning";
 import { db, schema } from "@/lib/db";
-import { inArray } from "drizzle-orm";
 import type { Alert } from "@/types/alerts";
 import type { KeyContextMap } from "@/lib/alerts/analyzer";
 import type { CodeScanSummary } from "@/lib/codeScanning";
 
-export const maxDuration = 180; // extended for code scanning + doc fetching
+export const maxDuration = 180;
 
 // ── R2 client ─────────────────────────────────────────────────────────────────
 
@@ -50,10 +59,8 @@ async function fetchDocExcerpt(
   objectKey: string,
   mimeType: string | null
 ): Promise<string | null> {
-  // Only fetch plain text and markdown — PDFs need a parser we don't have yet
   const textTypes = new Set(["text/plain", "text/markdown", "text/x-markdown"]);
   if (!textTypes.has(mimeType ?? "")) return null;
-
   try {
     const res = await r2.send(
       new GetObjectCommand({ Bucket: process.env.R2_BUCKET!, Key: objectKey })
@@ -61,7 +68,68 @@ async function fetchDocExcerpt(
     const content = await res.Body?.transformToString();
     return content ? content.slice(0, 1500) : null;
   } catch {
-    return null; // non-fatal
+    return null;
+  }
+}
+
+// ── Persist alerts to DB ──────────────────────────────────────────────────────
+
+async function persistAlerts(alerts: Alert[], todayStr: string): Promise<void> {
+  for (const alert of alerts) {
+    try {
+      await db
+        .insert(schema.keyAlerts)
+        .values({
+          providerKeyId: alert.apiKeyId ?? alert.subject,
+          provider: alert.provider,
+          alertType: alert.type,
+          severity: alert.severity,
+          subject: alert.subject,
+          message: alert.message,
+          detail: alert.detail ?? "",
+          investigateSteps: (alert.investigateSteps ?? []) as unknown as Record<string, unknown>,
+          value: String(alert.value ?? 0),
+          baseline: String(alert.baseline ?? 0),
+          changePct: String(alert.changePct ?? 0),
+          models: alert.models ?? [],
+          detectedAt: todayStr,
+        })
+        .onConflictDoNothing(); // safe for re-runs
+    } catch (err) {
+      console.warn("[cron] Failed to persist alert:", alert.id, err);
+    }
+  }
+}
+
+// ── Load cached alerts from DB ────────────────────────────────────────────────
+
+async function loadCachedAlerts(todayStr: string): Promise<Alert[] | null> {
+  try {
+    const rows = await db
+      .select()
+      .from(schema.keyAlerts)
+      .where(eq(schema.keyAlerts.detectedAt, todayStr));
+
+    if (rows.length === 0) return null;
+
+    return rows.map((row) => ({
+      id: row.id,
+      type: row.alertType as Alert["type"],
+      severity: row.severity as Alert["severity"],
+      provider: row.provider,
+      subject: row.subject,
+      message: row.message,
+      detail: row.detail,
+      investigateSteps: (row.investigateSteps as string[]) ?? [],
+      value: Number(row.value ?? 0),
+      baseline: Number(row.baseline ?? 0),
+      changePct: Number(row.changePct ?? 0),
+      models: row.models ?? [],
+      apiKeyId: row.providerKeyId,
+      detectedAt: row.detectedAt,
+    }));
+  } catch {
+    return null; // DB unavailable — proceed normally
   }
 }
 
@@ -82,9 +150,10 @@ export async function GET(req: NextRequest) {
   }
 
   const startedAt = new Date().toISOString();
+  const today = new Date().toISOString().slice(0, 10);
 
   try {
-    // ── 1. Fetch usage rows ─────────────────────────────────────────────────
+    // ── 1. Fetch usage rows (always needed for email body) ──────────────────
     const rows = await fetchAdminUsageRows(14);
 
     if (rows.length === 0) {
@@ -97,10 +166,29 @@ export async function GET(req: NextRequest) {
 
     const data = computeDailyData(rows);
 
-    // ── 2. Anomaly detection ────────────────────────────────────────────────
+    // ── 2. Check DB cache — skip analysis if already ran today ──────────────
+    const cachedAlerts = config.anomalyEnabled ? await loadCachedAlerts(today) : null;
+
+    if (cachedAlerts !== null) {
+      // Already ran today — send email with cached alerts, no GitHub/Claude calls
+      const result = await sendDailyBrief(data, cachedAlerts, config);
+      return NextResponse.json({
+        success: result.sent,
+        error: result.error,
+        recipients: config.recipients,
+        reportDate: data.reportDate,
+        totalCostUSD: data.yesterday.totalCostUSD,
+        rowCount: rows.length,
+        alertCount: cachedAlerts.length,
+        cached: true,
+        startedAt,
+        finishedAt: new Date().toISOString(),
+      });
+    }
+
+    // ── 3. Anomaly detection ────────────────────────────────────────────────
     const alertConfig = await loadAlertConfig(undefined);
     const detections = detectAll(rows, alertConfig);
-
     let alerts: Alert[] = [];
 
     if (!config.anomalyEnabled || detections.length === 0) {
@@ -118,7 +206,7 @@ export async function GET(req: NextRequest) {
       });
     }
 
-    // ── 3. Build key context map (purpose + docs + code scan) ───────────────
+    // ── 4. Build context map (purpose + R2 docs + code scan) ────────────────
     const keyContextMap: KeyContextMap = {};
 
     try {
@@ -151,7 +239,7 @@ export async function GET(req: NextRequest) {
           }
         }
 
-        // Run code scans (with 12h cache)
+        // Code scans — 72h cache in DB
         const githubToken = process.env.GITHUB_TOKEN;
         const codeScanByKey = new Map<string, CodeScanSummary>();
 
@@ -160,6 +248,7 @@ export async function GET(req: NextRequest) {
           if (repos.length === 0) continue;
 
           if (ctx.codeScanAt && isScanFresh(ctx.codeScanAt) && ctx.codeScanJson) {
+            // Use cached scan
             codeScanByKey.set(ctx.providerKeyId, ctx.codeScanJson as CodeScanSummary);
             continue;
           }
@@ -167,21 +256,20 @@ export async function GET(req: NextRequest) {
           try {
             const scan = await scanReposForKey(repos, ctx.provider, githubToken);
             codeScanByKey.set(ctx.providerKeyId, scan);
-
-            // Cache in DB
             await db
               .update(schema.keyContexts)
               .set({
                 codeScanJson: scan as unknown as Record<string, unknown>,
                 codeScanAt: new Date(),
               })
-              .where(inArray(schema.keyContexts.providerKeyId, [ctx.providerKeyId]));
+              .where(and(
+                inArray(schema.keyContexts.providerKeyId, [ctx.providerKeyId])
+              ));
           } catch (scanErr) {
             console.warn(`[cron] Code scan failed for ${ctx.providerKeyId}:`, scanErr);
           }
         }
 
-        // Assemble context map
         for (const ctx of contexts) {
           keyContextMap[ctx.providerKeyId] = {
             purpose: ctx.purpose ?? null,
@@ -196,8 +284,7 @@ export async function GET(req: NextRequest) {
       console.warn("[cron] Context enrichment failed (non-fatal):", ctxErr);
     }
 
-    // ── 4. AI-powered enrichment ─────────────────────────────────────────────
-    const today = new Date().toISOString().slice(0, 10);
+    // ── 5. AI enrichment ────────────────────────────────────────────────────
     alerts = await enrichWithAI(detections, today, keyContextMap).catch(() =>
       detections.map((d) => ({
         ...d,
@@ -208,7 +295,10 @@ export async function GET(req: NextRequest) {
       }))
     );
 
-    // ── 5. Send digest ──────────────────────────────────────────────────────
+    // ── 6. Persist results — subsequent runs skip steps 3-5 ─────────────────
+    await persistAlerts(alerts, today);
+
+    // ── 7. Send digest ──────────────────────────────────────────────────────
     const result = await sendDailyBrief(data, alerts, config);
 
     return NextResponse.json({
@@ -220,6 +310,7 @@ export async function GET(req: NextRequest) {
       rowCount: rows.length,
       alertCount: alerts.length,
       contextEnriched: Object.keys(keyContextMap).length,
+      cached: false,
       startedAt,
       finishedAt: new Date().toISOString(),
     });

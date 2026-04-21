@@ -196,6 +196,32 @@ export const keyDocuments = pgTable("key_documents", {
   index("key_documents_key_idx").on(t.orgId, t.providerKeyId),
 ]);
 
+// ── Key Alerts (persisted enriched anomaly results) ───────────────────────────
+// One row per (providerKeyId, alertType, detectedAt) — unique index prevents
+// duplicate analysis on re-runs. The cron checks this table first; if today's
+// alerts already exist it skips the expensive GitHub scan + Claude enrichment.
+
+export const keyAlerts = pgTable("key_alerts", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  providerKeyId: text("provider_key_id").notNull(),
+  provider: text("provider").notNull(),
+  alertType: text("alert_type").notNull(),               // cost_spike|cost_drop|volume_spike|key_model_shift|new_key
+  severity: text("severity").notNull(),                  // critical|warning|info
+  subject: text("subject").notNull(),                    // key display name used in alert
+  message: text("message").notNull(),                    // raw detection message
+  detail: text("detail").notNull(),                      // AI-enriched explanation
+  investigateSteps: jsonb("investigate_steps").notNull().default(sql`'[]'::jsonb`),
+  value: numeric("value", { precision: 12, scale: 6 }),
+  baseline: numeric("baseline", { precision: 12, scale: 6 }),
+  changePct: numeric("change_pct", { precision: 8, scale: 2 }),
+  models: text("models").array(),
+  detectedAt: date("detected_at").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("key_alerts_dedup_idx").on(t.providerKeyId, t.alertType, t.detectedAt),
+  index("key_alerts_date_idx").on(t.detectedAt),
+]);
+
 // ── Invitations ───────────────────────────────────────────────────────────────
 
 export const invitations = pgTable("invitations", {
