@@ -42,20 +42,35 @@ async function oaiPaginate(url: string, token: string): Promise<unknown[]> {
 }
 
 async function oaiFetchKeyNames(token: string): Promise<Record<string, string>> {
-  let projectsData: { data?: { id: string; name: string }[] };
+  const keyNames: Record<string, string> = {};
+
+  // 1. Org-level API keys (not tied to a project)
   try {
-    projectsData = await oaiGet(`${OAI_BASE}/projects?limit=100`, token) as typeof projectsData;
+    const orgKeys = await oaiGet(`${OAI_BASE}/api_keys?limit=100`, token) as { data?: { id: string; name: string }[] };
+    for (const k of orgKeys.data ?? []) {
+      keyNames[k.id] = k.name;
+    }
   } catch {
-    return {};
+    // endpoint may not exist on all plans — ignore
+  }
+
+  // 2. Per-project keys (active projects)
+  let projectsData: { data?: { id: string; name: string; status?: string }[] };
+  try {
+    projectsData = await oaiGet(`${OAI_BASE}/projects?limit=100&include_archived=true`, token) as typeof projectsData;
+  } catch {
+    return keyNames;
   }
   const projects = projectsData.data ?? [];
-  const keyNames: Record<string, string> = {};
   await Promise.all(
     projects.map(async (proj) => {
       try {
         const d = await oaiGet(`${OAI_BASE}/projects/${proj.id}/api_keys?limit=100`, token) as { data?: { id: string; name: string }[] };
         for (const k of d.data ?? []) {
-          keyNames[k.id] = `${k.name} (${proj.name})`;
+          // Don't overwrite if we already have a name from org-level lookup
+          if (!keyNames[k.id]) {
+            keyNames[k.id] = `${k.name} (${proj.name})`;
+          }
         }
       } catch {
         // skip projects that error

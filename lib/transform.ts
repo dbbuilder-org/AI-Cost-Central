@@ -58,7 +58,7 @@ export function transformOpenAI(raw: OAIRawData): UsageRow[] {
       const existing = rowMap.get(mapKey) ?? {
         provider: "openai" as const,
         apiKeyId: keyId,
-        apiKeyName: raw.keyNames[keyId] ?? (keyId === "org" ? "Org (unattributed)" : keyId),
+        apiKeyName: raw.keyNames[keyId] ?? (keyId === "org" ? "Org (unattributed)" : `key_…${keyId.slice(-8)}`),
         model,
         date,
         inputTokens: 0,
