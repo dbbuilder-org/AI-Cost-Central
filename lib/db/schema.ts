@@ -160,6 +160,40 @@ export const annotations = pgTable("annotations", {
   index("annotations_entity_idx").on(t.orgId, t.entityType, t.entityId),
 ]);
 
+// ── Key Contexts ──────────────────────────────────────────────────────────────
+// Annotation layer for API keys discovered in usage data.
+// Keyed by provider key ID (e.g. key_CW8AeuAYr8nLSmK3) so it works whether
+// or not the encrypted key is stored in apiKeys table.
+
+export const keyContexts = pgTable("key_contexts", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: text("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  providerKeyId: text("provider_key_id").notNull(),     // provider's own key ID
+  provider: text("provider").notNull(),                  // openai|anthropic|google
+  displayName: text("display_name"),                     // human alias (overrides provider name)
+  purpose: text("purpose"),                              // what is this key used for?
+  githubRepos: text("github_repos").array().default(sql`'{}'`).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("key_contexts_org_key_uniq").on(t.orgId, t.providerKeyId),
+  index("key_contexts_org_idx").on(t.orgId),
+]);
+
+export const keyDocuments = pgTable("key_documents", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  orgId: text("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  providerKeyId: text("provider_key_id").notNull(),
+  blobUrl: text("blob_url").notNull(),
+  fileName: text("file_name").notNull(),
+  fileSize: integer("file_size"),
+  mimeType: text("mime_type"),
+  uploadedBy: text("uploaded_by"),                       // Clerk user ID
+  uploadedAt: timestamp("uploaded_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index("key_documents_key_idx").on(t.orgId, t.providerKeyId),
+]);
+
 // ── Invitations ───────────────────────────────────────────────────────────────
 
 export const invitations = pgTable("invitations", {

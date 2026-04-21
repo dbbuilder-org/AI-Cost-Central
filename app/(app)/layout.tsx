@@ -11,12 +11,14 @@ import {
   Settings,
   CreditCard,
   Key,
+  Brain,
 } from "lucide-react";
 
 const NAV_ITEMS = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/analytics", label: "Analytics", icon: LineChart },
   { href: "/projects", label: "Projects", icon: FolderOpen },
+  { href: "/keys", label: "Key Intel", icon: Brain },
   { href: "/settings/keys", label: "API Keys", icon: Key },
   { href: "/settings", label: "Settings", icon: Settings },
   { href: "/billing", label: "Billing", icon: CreditCard },
