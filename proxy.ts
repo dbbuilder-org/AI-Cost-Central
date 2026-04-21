@@ -7,7 +7,8 @@ const isPublicRoute = createRouteMatcher([
   "/pricing(.*)",               // Pricing page
   "/sign-in(.*)",               // Clerk auth
   "/sign-up(.*)",               // Clerk auth
-  "/api/webhooks/(.*)",         // Clerk + Stripe webhooks (must be unprotected)
+  "/api/webhooks/(.*)",         // Clerk + Stripe webhooks (validated by signature in handler)
+  "/api/cron/(.*)",             // Cron jobs (validated by x-cron-secret header in each handler)
   "/api/health",                // Health check
 ]);
 
