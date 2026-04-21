@@ -38,54 +38,66 @@ function buildFallbackAlert(result: DetectionResult, date: string): Alert {
 }
 
 function buildFallbackDetail(r: DetectionResult): string {
+  const model = r.models?.[0] ?? "unknown model";
   switch (r.type) {
     case "cost_spike":
-      return `${r.subject} on ${r.provider} showed a significant cost increase on ${new Date().toLocaleDateString()}. The daily cost reached $${r.value.toFixed(2)}, which is ${r.changePct.toFixed(0)}% above the ${r.baseline.toFixed(2)} baseline. This may indicate a traffic surge, an inefficient prompt, or a new workflow using this model.`;
+      return `API key "${r.subject}" (${r.provider}) showed a significant cost increase. The daily cost reached $${r.value.toFixed(2)}, which is ${r.changePct.toFixed(0)}% above the $${r.baseline.toFixed(2)} baseline. The primary driver was ${model}. This may indicate a traffic surge, an inefficient prompt, or a new workflow on this key.`;
     case "cost_drop":
-      return `${r.subject} on ${r.provider} showed a significant cost decrease, dropping to $${r.value.toFixed(2)} vs the $${r.baseline.toFixed(2)} baseline. This could indicate a broken integration, a deployment issue, or intentional change.`;
+      return `API key "${r.subject}" (${r.provider}) cost dropped to $${r.value.toFixed(2)} vs the $${r.baseline.toFixed(2)} baseline. This could indicate a broken integration, a deployment issue, or an intentional change to the service using this key.`;
     case "volume_spike":
-      return `${r.subject} on ${r.provider} received ${r.value.toLocaleString()} requests, a ${r.changePct.toFixed(0)}% increase over the baseline of ${Math.round(r.baseline).toLocaleString()} requests/day.`;
-    case "new_model":
-      return `A new model ${r.subject} on ${r.provider} appeared in usage data for the first time. It generated $${r.value.toFixed(2)} in charges and was not seen in prior usage history.`;
+      return `API key "${r.subject}" (${r.provider}) received ${r.value.toLocaleString()} requests today — a ${r.changePct.toFixed(0)}% increase over the ${Math.round(r.baseline).toLocaleString()} requests/day baseline. Primary model: ${model}.`;
+    case "key_model_shift":
+      return r.models && r.models.length > 1
+        ? `API key "${r.subject}" (${r.provider}) shifted its primary model from ${r.models[1]} to ${r.models[0]}. This change may explain any associated cost movement — different models have different pricing and performance characteristics.`
+        : `API key "${r.subject}" (${r.provider}) used ${model} for the first time today, spending $${r.value.toFixed(4)}. This model was not seen in prior usage history for this key.`;
     case "new_key":
-      return `A new API key "${r.subject}" on ${r.provider} was detected with first usage recorded recently. Total spend so far: $${r.value.toFixed(2)}.`;
+      return `A new API key "${r.subject}" (${r.provider}) was detected with first usage recorded recently. Total spend so far: $${r.value.toFixed(2)}${model !== "unknown model" ? `, primarily via ${model}` : ""}.`;
   }
 }
 
 function buildFallbackSteps(r: DetectionResult): string[] {
+  const model = r.models?.[0] ?? "the model";
   switch (r.type) {
     case "cost_spike":
     case "volume_spike":
       return [
-        `Check the AICostCentral dashboard By API Key tab to identify which project is driving ${r.subject} usage.`,
-        `Review recent deployments or code changes that might have increased call frequency or token count.`,
-        `Set a daily cost alert threshold in your AI provider console to get notified before charges accumulate.`,
+        `Check which service or codebase uses the API key "${r.subject}" — that project is the source of this spike.`,
+        `Review recent deployments or code changes to that project for increases in call frequency, token count, or prompt size.`,
+        `Set a daily budget limit on this key in your ${r.provider} console to cap any future runaway spend.`,
       ];
     case "cost_drop":
       return [
-        `Verify that the application or service using ${r.subject} is still running and making API calls.`,
-        `Check your deployment logs for errors or configuration changes made in the last 24 hours.`,
-        `Test the integration manually to confirm the API key is still valid and the endpoint is reachable.`,
+        `Verify that the service using API key "${r.subject}" is still running and actively making API calls.`,
+        `Check deployment logs for errors or configuration changes in the last 24 hours for the service tied to this key.`,
+        `Test the integration manually — confirm the key is valid and the endpoint is reachable.`,
       ];
-    case "new_model":
-      return [
-        `Identify which codebase introduced ${r.subject} — check recent commits for model name changes.`,
-        `Verify this model was intentionally adopted (not a typo or hallucination from AI-generated code).`,
-        `Review the pricing for ${r.subject} on ${r.provider} to ensure it fits your cost targets.`,
-      ];
+    case "key_model_shift":
+      return r.models && r.models.length > 1
+        ? [
+            `Check git history for the project using "${r.subject}" for any changes to the model parameter (${r.models[1]} → ${r.models[0]}).`,
+            `Compare pricing between ${r.models[1]} and ${r.models[0]} to estimate the ongoing cost impact of this switch.`,
+            `If unintentional, revert the model setting and investigate who or what made the change.`,
+          ]
+        : [
+            `Find the codebase or service using "${r.subject}" and check for recent commits that introduced ${model}.`,
+            `Verify the model name is intentional — AI-generated code sometimes defaults to more expensive models.`,
+            `Review ${model} pricing on ${r.provider} to confirm this fits your cost targets for this key.`,
+          ];
     case "new_key":
       return [
-        `Confirm that "${r.subject}" was created intentionally by your team.`,
-        `If unexpected, rotate or revoke the key immediately and audit who has admin access.`,
-        `Tag the key in AICostCentral settings with its project name for future tracking.`,
+        `Confirm that "${r.subject}" was created intentionally by a member of your team.`,
+        `If unexpected, rotate or revoke the key immediately and audit who has admin access on ${r.provider}.`,
+        `Tag the key with its project name in AICostCentral settings so future anomalies are easier to attribute.`,
       ];
   }
 }
 
 const SYSTEM_PROMPT = `You are an AI spending analyst helping engineering teams understand unusual patterns in their AI API usage.
+All anomalies are reported at the API key level — the subject is always an API key, not a model.
+Model information is provided as context to explain why the key's cost or volume changed.
 When given anomaly detection results, provide:
-1. A clear 2-3 sentence business explanation of what happened and why it matters
-2. Exactly 3 specific, actionable investigation steps
+1. A clear 2-3 sentence business explanation focused on the API key and what changed about its behavior
+2. Exactly 3 specific, actionable investigation steps that start from the API key and lead to the root cause
 
 Keep explanations factual and concise. Focus on practical impact. Never use jargon.
 Respond in JSON format.`;

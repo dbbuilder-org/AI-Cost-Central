@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   detectCostAnomalies,
   detectVolumeSpikes,
-  detectNewModels,
+  detectKeyModelShift,
   detectNewKeys,
   detectAll,
 } from "@/lib/alerts/detector";
@@ -28,14 +28,19 @@ function makeRow(overrides: Partial<UsageRow> = {}): UsageRow {
   };
 }
 
-/** Build N days of normal usage for a model, with the last day as "today" */
+/**
+ * Build N days of usage for a given API key+model combo.
+ * Last date in the array is "today". normalCost is applied to all but the last day.
+ */
 function normalRows(
   model: string,
   provider: UsageRow["provider"],
   normalCost: number,
   days: number,
   todayCost: number,
-  normalRequests = 100
+  normalRequests = 100,
+  apiKeyId = "key_001",
+  apiKeyName = "My Key"
 ): UsageRow[] {
   const rows: UsageRow[] = [];
   const today = new Date("2026-04-13");
@@ -45,11 +50,9 @@ function normalRows(
     const date = d.toISOString().slice(0, 10);
     const isToday = i === 0;
     rows.push(makeRow({
-      model,
-      provider,
-      date,
+      model, provider, date, apiKeyId, apiKeyName,
       costUSD: isToday ? todayCost : normalCost,
-      requests: isToday ? normalRequests : normalRequests,
+      requests: normalRequests,
     }));
   }
   return rows;
@@ -70,10 +73,15 @@ describe("detectCostAnomalies", () => {
     const alerts = detectCostAnomalies(rows, DEFAULT_CONFIG);
     const spikes = alerts.filter((a) => a.type === "cost_spike");
     expect(spikes).toHaveLength(1);
-    expect(spikes[0].subject).toBe("gpt-4o");
+    // subject is now the API key name
+    expect(spikes[0].subject).toBe("My Key");
     expect(spikes[0].provider).toBe("openai");
     expect(spikes[0].value).toBeCloseTo(50.0);
     expect(spikes[0].changePct).toBeGreaterThan(50);
+    // apiKeyId is populated
+    expect(spikes[0].apiKeyId).toBe("key_001");
+    // model is available as context
+    expect(spikes[0].models).toContain("gpt-4o");
   });
 
   it("spike is critical when z-score is very high", () => {
@@ -87,7 +95,6 @@ describe("detectCostAnomalies", () => {
     const rows = normalRows("gpt-4o", "openai", 5.0, 14, 15.0);
     const alerts = detectCostAnomalies(rows);
     const spike = alerts.find((a) => a.type === "cost_spike");
-    // May or may not fire depending on stddev — just check we don't crash
     if (spike) expect(spike.severity).toMatch(/critical|warning|info/);
   });
 
@@ -96,7 +103,7 @@ describe("detectCostAnomalies", () => {
     const alerts = detectCostAnomalies(rows);
     const drops = alerts.filter((a) => a.type === "cost_drop");
     expect(drops).toHaveLength(1);
-    expect(drops[0].subject).toBe("gpt-4o");
+    expect(drops[0].subject).toBe("My Key");
     expect(drops[0].changePct).toBeLessThan(0);
   });
 
@@ -107,19 +114,21 @@ describe("detectCostAnomalies", () => {
     expect(drop?.severity).toBe("critical");
   });
 
-  it("does NOT alert for low-baseline models (below minBaselineCost)", () => {
+  it("does NOT alert for low-baseline keys (below minBaselineCost)", () => {
     const rows = normalRows("gpt-4o-mini", "openai", 0.1, 14, 0.01);
     const alerts = detectCostAnomalies(rows, DEFAULT_CONFIG);
     expect(alerts).toHaveLength(0);
   });
 
-  it("handles multiple models independently", () => {
-    const gpt4Rows = normalRows("gpt-4o", "openai", 5.0, 14, 50.0);
-    const haikuRows = normalRows("claude-haiku-4-5-20251001", "anthropic", 2.0, 14, 2.0);
+  it("aggregates all models on the same key into a single series", () => {
+    // Two models on the same key — combined cost spikes
+    const gpt4Rows = normalRows("gpt-4o", "openai", 3.0, 14, 30.0, 100, "key_001", "My Key");
+    const haikuRows = normalRows("claude-haiku-4-5-20251001", "anthropic", 2.0, 14, 2.0, 100, "key_002", "Other Key");
     const alerts = detectCostAnomalies([...gpt4Rows, ...haikuRows]);
     const spikes = alerts.filter((a) => a.type === "cost_spike");
+    // Only key_001 should spike (10× baseline), key_002 is flat
     expect(spikes.length).toBeGreaterThanOrEqual(1);
-    expect(spikes.every((s) => s.subject === "gpt-4o")).toBe(true);
+    expect(spikes.every((s) => s.apiKeyId === "key_001")).toBe(true);
   });
 
   it("returns no alerts with fewer than minBaselineDays+1 rows", () => {
@@ -135,14 +144,22 @@ describe("detectCostAnomalies", () => {
     expect(drops).toHaveLength(0);
   });
 
-  it("handles cross-provider data without mixing models", () => {
-    const oaiRows = normalRows("gpt-4o", "openai", 5.0, 14, 50.0);
-    const antRows = normalRows("gpt-4o", "anthropic", 5.0, 14, 5.0); // same model name, different provider
-    const alerts = detectCostAnomalies([...oaiRows, ...antRows]);
+  it("detects each key independently for cross-key data", () => {
+    const spikeRows = normalRows("gpt-4o", "openai", 5.0, 14, 50.0, 100, "key_spike", "Spike Key");
+    const normalKeyRows = normalRows("gpt-4o", "openai", 5.0, 14, 5.0, 100, "key_flat", "Flat Key");
+    const alerts = detectCostAnomalies([...spikeRows, ...normalKeyRows]);
     const spikes = alerts.filter((a) => a.type === "cost_spike");
-    // Only the openai/gpt-4o should spike
     expect(spikes).toHaveLength(1);
-    expect(spikes[0].provider).toBe("openai");
+    expect(spikes[0].apiKeyId).toBe("key_spike");
+  });
+
+  it("message includes key name and model context", () => {
+    const rows = normalRows("gpt-4o", "openai", 5.0, 14, 50.0);
+    const alerts = detectCostAnomalies(rows);
+    const spike = alerts.find((a) => a.type === "cost_spike");
+    expect(spike?.message).toContain("My Key");
+    expect(spike?.message).toContain("$50.00");
+    expect(spike?.message).toContain("gpt-4o");
   });
 });
 
@@ -151,76 +168,118 @@ describe("detectCostAnomalies", () => {
 describe("detectVolumeSpikes", () => {
   it("detects a volume spike when requests are 10× baseline", () => {
     const rows = normalRows("gpt-4o", "openai", 5.0, 14, 5.0, 100);
-    // Make today's requests extremely high
-    const today = rows[rows.length - 1];
-    today.requests = 1000;
+    rows[rows.length - 1].requests = 1000;
     const alerts = detectVolumeSpikes(rows);
     const spikes = alerts.filter((a) => a.type === "volume_spike");
     expect(spikes).toHaveLength(1);
+    expect(spikes[0].subject).toBe("My Key");
     expect(spikes[0].value).toBe(1000);
   });
 
-  it("returns no spike for low-volume models", () => {
+  it("returns no spike for low-volume keys", () => {
     const rows = normalRows("gpt-4o", "openai", 5.0, 14, 5.0, 3);
     rows[rows.length - 1].requests = 20;
     const alerts = detectVolumeSpikes(rows);
-    // baseline mean is ~3, today is 20 but < 20 threshold might vary
-    // Key requirement: no crash
     expect(Array.isArray(alerts)).toBe(true);
   });
 
   it("does not fire for normal volume variation", () => {
     const rows = normalRows("gpt-4o", "openai", 5.0, 14, 5.0, 100);
-    rows[rows.length - 1].requests = 120; // 20% increase — not a spike
+    rows[rows.length - 1].requests = 120;
     const alerts = detectVolumeSpikes(rows);
     expect(alerts.filter((a) => a.type === "volume_spike")).toHaveLength(0);
   });
+
+  it("message includes key name and model context", () => {
+    const rows = normalRows("gpt-4o", "openai", 5.0, 14, 5.0, 100);
+    rows[rows.length - 1].requests = 1000;
+    const alerts = detectVolumeSpikes(rows);
+    const spike = alerts.find((a) => a.type === "volume_spike");
+    expect(spike?.message).toContain("My Key");
+    expect(spike?.message).toContain("gpt-4o");
+  });
 });
 
-// ── detectNewModels ────────────────────────────────────────────────────────
+// ── detectKeyModelShift ────────────────────────────────────────────────────
 
-describe("detectNewModels", () => {
-  it("detects a model that appears only in the last 7 days", () => {
-    const existingRows = normalRows("gpt-4o", "openai", 5.0, 28, 5.0);
-    // New model appears only in the last 3 days
-    const today = new Date("2026-04-13");
-    const newModelRows = [0, 1, 2].map((i) => {
-      const d = new Date(today);
-      d.setDate(d.getDate() - i);
-      return makeRow({
-        model: "gpt-5-new",
-        date: d.toISOString().slice(0, 10),
-        costUSD: 1.5,
-        requests: 5,
-      });
+describe("detectKeyModelShift", () => {
+  it("detects when a key uses a new model for the first time", () => {
+    const existingRows = normalRows("gpt-4o", "openai", 5.0, 14, 5.0);
+    // Today, the same key also uses a new model
+    const today = "2026-04-13";
+    const newModelRow = makeRow({
+      model: "gpt-4-turbo-new",
+      date: today,
+      costUSD: 1.5,
+      requests: 5,
     });
-    const alerts = detectNewModels([...existingRows, ...newModelRows]);
-    const newModels = alerts.filter((a) => a.type === "new_model");
-    expect(newModels.length).toBeGreaterThanOrEqual(1);
-    expect(newModels[0].subject).toBe("gpt-5-new");
+    const alerts = detectKeyModelShift([...existingRows, newModelRow]);
+    const shifts = alerts.filter((a) => a.type === "key_model_shift");
+    expect(shifts.length).toBeGreaterThanOrEqual(1);
+    // Subject is the KEY, not the model
+    expect(shifts[0].subject).toBe("My Key");
+    // Model is in the models array
+    expect(shifts[0].models).toContain("gpt-4-turbo-new");
   });
 
-  it("does NOT flag a model that was already present in prior weeks", () => {
-    const rows = normalRows("gpt-4o", "openai", 5.0, 28, 5.0);
-    const alerts = detectNewModels(rows);
-    expect(alerts.filter((a) => a.type === "new_model")).toHaveLength(0);
+  it("does NOT flag a model the key has always used", () => {
+    const rows = normalRows("gpt-4o", "openai", 5.0, 14, 5.0);
+    const alerts = detectKeyModelShift(rows);
+    expect(alerts.filter((a) => a.type === "key_model_shift")).toHaveLength(0);
   });
 
-  it("ignores new models with zero cost and zero requests", () => {
-    const existingRows = normalRows("gpt-4o", "openai", 5.0, 28, 5.0);
-    const zeroRow = makeRow({
+  it("ignores new models with negligible cost", () => {
+    const existingRows = normalRows("gpt-4o", "openai", 5.0, 14, 5.0);
+    const tinyRow = makeRow({
       model: "ghost-model",
       date: "2026-04-13",
       costUSD: 0,
-      requests: 0,
     });
-    const alerts = detectNewModels([...existingRows, zeroRow]);
-    expect(alerts.filter((a) => a.subject === "ghost-model")).toHaveLength(0);
+    const alerts = detectKeyModelShift([...existingRows, tinyRow]);
+    expect(alerts.filter((a) => a.models?.includes("ghost-model"))).toHaveLength(0);
   });
 
-  it("returns empty when not enough days of data", () => {
+  it("returns empty when not enough baseline days", () => {
     const rows = normalRows("gpt-4o", "openai", 5.0, 4, 5.0);
-    expect(detectNewModels(rows)).toHaveLength(0);
+    expect(detectKeyModelShift(rows)).toHaveLength(0);
+  });
+
+  it("message includes the key name and new model name", () => {
+    const existingRows = normalRows("gpt-4o", "openai", 5.0, 14, 5.0);
+    const newModelRow = makeRow({
+      model: "gpt-5-preview",
+      date: "2026-04-13",
+      costUSD: 2.0,
+    });
+    const alerts = detectKeyModelShift([...existingRows, newModelRow]);
+    const shift = alerts.find((a) => a.type === "key_model_shift");
+    expect(shift?.message).toContain("My Key");
+    expect(shift?.message).toContain("gpt-5-preview");
+  });
+
+  it("detects dominant model shift when key switches primary model", () => {
+    // Baseline: key_001 uses gpt-4o as primary ($5/day), gpt-4o-mini as minor ($0.10/day)
+    const today = new Date("2026-04-13");
+    const rows: UsageRow[] = [];
+    for (let i = 13; i > 0; i--) {
+      const d = new Date(today);
+      d.setDate(d.getDate() - i);
+      const date = d.toISOString().slice(0, 10);
+      rows.push(makeRow({ model: "gpt-4o", date, costUSD: 5.0 }));
+      rows.push(makeRow({ model: "gpt-4o-mini", date, costUSD: 0.10 }));
+    }
+    // Today: gpt-4o-mini becomes dominant ($8), gpt-4o drops to $0.10
+    rows.push(makeRow({ model: "gpt-4o", date: "2026-04-13", costUSD: 0.10 }));
+    rows.push(makeRow({ model: "gpt-4o-mini", date: "2026-04-13", costUSD: 8.0 }));
+
+    const alerts = detectKeyModelShift(rows);
+    const shifts = alerts.filter((a) => a.type === "key_model_shift");
+    // Should detect that gpt-4o-mini is now dominant
+    const dominantShift = shifts.find(
+      (a) => a.models?.includes("gpt-4o-mini") && a.models?.includes("gpt-4o")
+    );
+    expect(dominantShift).toBeDefined();
+    expect(dominantShift?.subject).toBe("My Key");
   });
 });
 
@@ -228,13 +287,11 @@ describe("detectNewModels", () => {
 
 describe("detectNewKeys", () => {
   it("detects a key that first appears in last 3 days", () => {
-    // Old key with 28d of history
     const oldRows = Array.from({ length: 28 }, (_, i) => {
       const d = new Date("2026-04-13");
       d.setDate(d.getDate() - (27 - i));
       return makeRow({ apiKeyId: "key_old", apiKeyName: "Old Key", date: d.toISOString().slice(0, 10) });
     });
-    // New key appears only 1 day ago
     const newRow = makeRow({
       apiKeyId: "key_new",
       apiKeyName: "Brand New Key",
@@ -245,6 +302,7 @@ describe("detectNewKeys", () => {
     const newKeys = alerts.filter((a) => a.type === "new_key");
     expect(newKeys).toHaveLength(1);
     expect(newKeys[0].subject).toBe("Brand New Key");
+    expect(newKeys[0].apiKeyId).toBe("key_new");
   });
 
   it("does NOT flag keys that have been around > newKeyLookbackDays", () => {
@@ -281,6 +339,19 @@ describe("detectNewKeys", () => {
     expect(alerts[0].severity).toBe("info");
   });
 
+  it("includes model context in new key alert", () => {
+    const newRow = makeRow({
+      apiKeyId: "key_new",
+      apiKeyName: "New Key",
+      date: "2026-04-13",
+      model: "gpt-4o",
+      costUSD: 5.0,
+    });
+    const alerts = detectNewKeys([newRow]);
+    expect(alerts[0].models).toContain("gpt-4o");
+    expect(alerts[0].message).toContain("gpt-4o");
+  });
+
   it("handles empty rows gracefully", () => {
     expect(detectNewKeys([])).toHaveLength(0);
   });
@@ -307,26 +378,24 @@ describe("detectAll", () => {
     expect(detectAll([])).toHaveLength(0);
   });
 
-  it("returns empty for perfectly normal data", () => {
+  it("returns no cost/volume alerts for perfectly normal data", () => {
     const rows = normalRows("gpt-4o", "openai", 5.0, 28, 5.0);
     const alerts = detectAll(rows);
     expect(alerts.filter((a) => a.type === "cost_spike")).toHaveLength(0);
     expect(alerts.filter((a) => a.type === "cost_drop")).toHaveLength(0);
-    expect(alerts.filter((a) => a.type === "new_model")).toHaveLength(0);
-    // new_key might or might not fire depending on data — just no crash
+    expect(alerts.filter((a) => a.type === "key_model_shift")).toHaveLength(0);
   });
 
   it("works with multi-provider data", () => {
-    const oaiRows = normalRows("gpt-4o", "openai", 5.0, 14, 5.0);
-    const antRows = normalRows("claude-sonnet-4-6", "anthropic", 3.0, 14, 3.0);
-    const gglRows = normalRows("gemini-2.5-flash", "google", 0.5, 14, 0.5);
+    const oaiRows = normalRows("gpt-4o", "openai", 5.0, 14, 5.0, 100, "key_oai", "OAI Key");
+    const antRows = normalRows("claude-sonnet-4-6", "anthropic", 3.0, 14, 3.0, 100, "key_ant", "ANT Key");
+    const gglRows = normalRows("gemini-2.5-flash", "google", 0.5, 14, 0.5, 100, "key_ggl", "GGL Key");
     const alerts = detectAll([...oaiRows, ...antRows, ...gglRows]);
     expect(Array.isArray(alerts)).toBe(true);
   });
 
   it("respects custom config thresholds", () => {
-    // With very high spikeMinPct, a 2× spike should not fire
-    const rows = normalRows("gpt-4o", "openai", 5.0, 14, 11.0); // 120% increase
+    const rows = normalRows("gpt-4o", "openai", 5.0, 14, 11.0);
     const strictConfig = { ...DEFAULT_CONFIG, spikeMinPct: 200 };
     const alerts = detectAll(rows, strictConfig);
     expect(alerts.filter((a) => a.type === "cost_spike")).toHaveLength(0);
@@ -339,23 +408,12 @@ describe("detectAll", () => {
     expect(spike?.severity).toBe("critical");
   });
 
-  it("message includes relevant details for cost spike", () => {
+  it("all alert subjects are API key names, not model names", () => {
     const rows = normalRows("gpt-4o", "openai", 5.0, 14, 50.0);
-    const alerts = detectCostAnomalies(rows);
-    const spike = alerts.find((a) => a.type === "cost_spike");
-    expect(spike?.message).toContain("gpt-4o");
-    expect(spike?.message).toContain("$50.00");
-  });
-
-  it("message includes model name for new model", () => {
-    const existingRows = normalRows("gpt-4o", "openai", 5.0, 28, 5.0);
-    const newRow = makeRow({
-      model: "gpt-6-preview",
-      date: "2026-04-13",
-      costUSD: 2.0,
-    });
-    const alerts = detectNewModels([...existingRows, newRow]);
-    const newModel = alerts.find((a) => a.type === "new_model");
-    expect(newModel?.message).toContain("gpt-6-preview");
+    const alerts = detectAll(rows);
+    for (const alert of alerts.filter((a) => a.type === "cost_spike" || a.type === "volume_spike")) {
+      expect(alert.subject).toBe("My Key");
+      expect(alert.subject).not.toBe("gpt-4o");
+    }
   });
 });

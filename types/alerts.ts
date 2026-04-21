@@ -1,9 +1,9 @@
 export type AlertType =
-  | "cost_spike"    // daily cost > 2.5σ above baseline AND +50%
-  | "cost_drop"     // daily cost drops to <15% of baseline (broken integration)
-  | "volume_spike"  // request count > 3× baseline
-  | "new_model"     // model first appears in last 7d, not in prior 21d
-  | "new_key";      // API key first seen in last 3 days
+  | "cost_spike"       // API key daily cost > 2.5σ above baseline AND +50%
+  | "cost_drop"        // API key daily cost drops to <15% of baseline (broken integration)
+  | "volume_spike"     // API key request count > 3× baseline
+  | "key_model_shift"  // API key started using a new or different model today
+  | "new_key";         // API key first seen in last 3 days
 
 export type AlertSeverity = "critical" | "warning" | "info";
 
@@ -12,7 +12,9 @@ export interface DetectionResult {
   type: AlertType;
   severity: AlertSeverity;
   provider: string;
-  subject: string;          // model name or key display name
+  subject: string;          // API key display name (always key-centric)
+  apiKeyId?: string;        // API key ID for deduplication / linking
+  models?: string[];        // models involved in this anomaly (for context)
   message: string;          // short human-readable summary
   value: number;            // current metric value
   baseline: number;         // expected/normal value
@@ -31,10 +33,10 @@ export interface AlertConfig {
   spikeZScore: number;          // z-score threshold, default 2.5
   spikeMinPct: number;          // minimum % increase to fire, default 50
   dropMaxPctOfBaseline: number; // fire if today < this% of baseline, default 15
-  minBaselineCost: number;      // ignore models with baseline < this, default 0.50
-  newModelLookbackDays: number; // days to scan for "no prior use", default 21
+  minBaselineCost: number;      // ignore keys with baseline < this, default 0.50
   newKeyLookbackDays: number;   // days a key is considered "new", default 3
   minBaselineDays: number;      // need at least this many days for baseline, default 7
+  modelShiftMinCost: number;    // ignore model shifts below this cost, default 0.01
 }
 
 export const DEFAULT_CONFIG: AlertConfig = {
@@ -42,7 +44,7 @@ export const DEFAULT_CONFIG: AlertConfig = {
   spikeMinPct: 50,
   dropMaxPctOfBaseline: 15,
   minBaselineCost: 0.50,
-  newModelLookbackDays: 21,
   newKeyLookbackDays: 3,
   minBaselineDays: 7,
+  modelShiftMinCost: 0.01,
 };

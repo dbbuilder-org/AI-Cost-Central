@@ -9,11 +9,11 @@ const SEVERITY_COLORS = {
 };
 
 const TYPE_LABELS: Record<Alert["type"], string> = {
-  cost_spike:   "Cost Spike",
-  cost_drop:    "Cost Drop",
-  volume_spike: "Volume Spike",
-  new_model:    "New Model",
-  new_key:      "New Key",
+  cost_spike:       "Cost Spike",
+  cost_drop:        "Cost Drop",
+  volume_spike:     "Volume Spike",
+  key_model_shift:  "Model Shift",
+  new_key:          "New Key",
 };
 
 const PROVIDER_BADGE: Record<string, { label: string; cls: string }> = {

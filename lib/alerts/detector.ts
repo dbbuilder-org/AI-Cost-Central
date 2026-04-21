@@ -2,12 +2,17 @@
  * Stateless anomaly detector for AI provider usage data.
  * Pure functions — no side effects, fully unit-testable.
  *
+ * All detectors are API-key-centric: the unit of analysis is always an
+ * API key, not a model. Model info is included in messages as context
+ * (to explain *why* a key's cost changed) but the alert subject is always
+ * the key that behaved unexpectedly.
+ *
  * Algorithm:
- *  - Groups UsageRow[] by (provider, model) and (provider, apiKeyId)
- *  - Builds a daily time series of cost/requests for each group
+ *  - Groups UsageRow[] by apiKeyId
+ *  - Builds a daily time series of cost/requests for each key
  *  - "Today" = most recent date in dataset
- *  - "Baseline" = all dates except the most recent N (configurable)
- *  - Fires alerts when the current value deviates significantly from baseline
+ *  - "Baseline" = all dates except the most recent one
+ *  - Fires alerts when the current value deviates from baseline
  */
 
 import type { UsageRow } from "@/types";
@@ -38,7 +43,7 @@ function determineSeverity(
   baseline: number,
   z: number
 ): AlertSeverity {
-  if (type === "new_model" || type === "new_key") return "info";
+  if (type === "key_model_shift" || type === "new_key") return "info";
   if (type === "cost_drop") return value === 0 ? "critical" : "warning";
   // cost_spike / volume_spike
   if (z > 4 || value > baseline * 5) return "critical";
@@ -59,13 +64,9 @@ function dailyCostSeries(
   dates: string[]
 ): Record<string, number> {
   const series: Record<string, number> = {};
-  for (const date of dates) {
-    series[date] = 0;
-  }
+  for (const date of dates) series[date] = 0;
   for (const r of rows) {
-    if (series[r.date] !== undefined) {
-      series[r.date] += r.costUSD;
-    }
+    if (series[r.date] !== undefined) series[r.date] += r.costUSD;
   }
   return series;
 }
@@ -76,18 +77,28 @@ function dailyRequestSeries(
   dates: string[]
 ): Record<string, number> {
   const series: Record<string, number> = {};
-  for (const date of dates) {
-    series[date] = 0;
-  }
+  for (const date of dates) series[date] = 0;
   for (const r of rows) {
-    if (series[r.date] !== undefined) {
-      series[r.date] += r.requests;
-    }
+    if (series[r.date] !== undefined) series[r.date] += r.requests;
   }
   return series;
 }
 
-// ── Cost spike / drop detector ─────────────────────────────────────────────
+/** Find the model with the highest cost share among a set of rows */
+function dominantModel(rows: UsageRow[]): string | undefined {
+  const byModel = new Map<string, number>();
+  for (const r of rows) byModel.set(r.model, (byModel.get(r.model) ?? 0) + r.costUSD);
+  return [...byModel.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+}
+
+/** Build a map of model → total cost for a set of rows */
+function modelCostMap(rows: UsageRow[]): Map<string, number> {
+  const m = new Map<string, number>();
+  for (const r of rows) m.set(r.model, (m.get(r.model) ?? 0) + r.costUSD);
+  return m;
+}
+
+// ── Key cost spike / drop detector ────────────────────────────────────────
 
 export function detectCostAnomalies(
   rows: UsageRow[],
@@ -99,20 +110,17 @@ export function detectCostAnomalies(
   if (allDates.length < config.minBaselineDays + 1) return results;
 
   const todayDate = allDates[allDates.length - 1];
-  const baselineDates = allDates.slice(0, -1); // all except most recent
+  const baselineDates = allDates.slice(0, -1);
 
-  // Group by provider + model
-  const modelKeys = [
-    ...new Set(rows.map((r) => `${r.provider}::${r.model}`)),
-  ];
+  // Group by apiKeyId
+  const keyIds = [...new Set(rows.map((r) => r.apiKeyId))];
 
-  for (const key of modelKeys) {
-    const [provider, model] = key.split("::");
-    const modelRows = rows.filter(
-      (r) => r.provider === provider && r.model === model
-    );
+  for (const keyId of keyIds) {
+    const keyRows = rows.filter((r) => r.apiKeyId === keyId);
+    const keyName = keyRows[0].apiKeyName;
+    const provider = keyRows[0].provider;
 
-    const costSeries = dailyCostSeries(modelRows, allDates);
+    const costSeries = dailyCostSeries(keyRows, allDates);
     const todayValue = costSeries[todayDate] ?? 0;
     const baselineValues = baselineDates.map((d) => costSeries[d] ?? 0);
     const baseMean = mean(baselineValues);
@@ -123,13 +131,16 @@ export function detectCostAnomalies(
     }
 
     const z = zScore(todayValue, baseMean, baseSd);
-    const changePct =
-      baseMean > 0 ? ((todayValue - baseMean) / baseMean) * 100 : 0;
-    // When baseline is perfectly flat (stddev=0), fall back to absolute ratio
+    const changePct = baseMean > 0 ? ((todayValue - baseMean) / baseMean) * 100 : 0;
     const absoluteRatio = baseMean > 0 ? todayValue / baseMean : 0;
     const spikeDetected =
       (baseSd > 0 && z > config.spikeZScore) ||
       (baseSd === 0 && absoluteRatio > 1 + config.spikeMinPct / 100);
+
+    // Identify which model(s) drove today's spend (for context)
+    const todayRows = keyRows.filter((r) => r.date === todayDate);
+    const topModel = dominantModel(todayRows);
+    const modelSuffix = topModel ? ` — ${topModel}` : "";
 
     // Cost spike
     if (
@@ -142,15 +153,17 @@ export function detectCostAnomalies(
         type: "cost_spike",
         severity,
         provider,
-        subject: model,
-        message: `${model} cost spiked to $${todayValue.toFixed(2)} (${changePct > 0 ? "+" : ""}${changePct.toFixed(0)}% vs $${baseMean.toFixed(2)} baseline, z=${z.toFixed(1)})`,
+        subject: keyName,
+        apiKeyId: keyId,
+        models: topModel ? [topModel] : [],
+        message: `"${keyName}" cost spiked to $${todayValue.toFixed(2)} (${changePct > 0 ? "+" : ""}${changePct.toFixed(0)}% vs $${baseMean.toFixed(2)} baseline)${modelSuffix}`,
         value: todayValue,
         baseline: baseMean,
         changePct,
       });
     }
 
-    // Cost drop — only if model had meaningful baseline activity
+    // Cost drop — only if key had meaningful baseline activity
     if (
       baseMean >= config.minBaselineCost &&
       todayValue < (baseMean * config.dropMaxPctOfBaseline) / 100
@@ -159,8 +172,10 @@ export function detectCostAnomalies(
         type: "cost_drop",
         severity: determineSeverity("cost_drop", todayValue, baseMean, z),
         provider,
-        subject: model,
-        message: `${model} cost dropped to $${todayValue.toFixed(2)} (${Math.abs(changePct).toFixed(0)}% below $${baseMean.toFixed(2)} baseline — possible integration issue)`,
+        subject: keyName,
+        apiKeyId: keyId,
+        models: topModel ? [topModel] : [],
+        message: `"${keyName}" cost dropped to $${todayValue.toFixed(2)} (${Math.abs(changePct).toFixed(0)}% below $${baseMean.toFixed(2)} baseline — possible integration issue)`,
         value: todayValue,
         baseline: baseMean,
         changePct,
@@ -171,7 +186,7 @@ export function detectCostAnomalies(
   return results;
 }
 
-// ── Volume spike detector ──────────────────────────────────────────────────
+// ── Key volume spike detector ──────────────────────────────────────────────
 
 export function detectVolumeSpikes(
   rows: UsageRow[],
@@ -185,17 +200,14 @@ export function detectVolumeSpikes(
   const todayDate = allDates[allDates.length - 1];
   const baselineDates = allDates.slice(0, -1);
 
-  const modelKeys = [
-    ...new Set(rows.map((r) => `${r.provider}::${r.model}`)),
-  ];
+  const keyIds = [...new Set(rows.map((r) => r.apiKeyId))];
 
-  for (const key of modelKeys) {
-    const [provider, model] = key.split("::");
-    const modelRows = rows.filter(
-      (r) => r.provider === provider && r.model === model
-    );
+  for (const keyId of keyIds) {
+    const keyRows = rows.filter((r) => r.apiKeyId === keyId);
+    const keyName = keyRows[0].apiKeyName;
+    const provider = keyRows[0].provider;
 
-    const reqSeries = dailyRequestSeries(modelRows, allDates);
+    const reqSeries = dailyRequestSeries(keyRows, allDates);
     const todayReqs = reqSeries[todayDate] ?? 0;
     const baselineValues = baselineDates.map((d) => reqSeries[d] ?? 0);
     const baseMean = mean(baselineValues);
@@ -204,20 +216,24 @@ export function detectVolumeSpikes(
     if (baseMean < 5 && todayReqs < 20) continue; // ignore tiny volume
 
     const z = zScore(todayReqs, baseMean, baseSd);
-    const changePct =
-      baseMean > 0 ? ((todayReqs - baseMean) / baseMean) * 100 : 0;
+    const changePct = baseMean > 0 ? ((todayReqs - baseMean) / baseMean) * 100 : 0;
     const reqSpikeDetected =
       (baseSd > 0 && z > config.spikeZScore && todayReqs > baseMean * 3) ||
       (baseSd === 0 && todayReqs > baseMean * 3);
 
     if (reqSpikeDetected && todayReqs > 20) {
+      const todayRows = keyRows.filter((r) => r.date === todayDate);
+      const topModel = dominantModel(todayRows);
+
       const severity = determineSeverity("volume_spike", todayReqs, baseMean, z);
       results.push({
         type: "volume_spike",
         severity,
         provider,
-        subject: model,
-        message: `${model} requests spiked to ${todayReqs.toLocaleString()} (+${changePct.toFixed(0)}% vs baseline ${Math.round(baseMean).toLocaleString()}/day)`,
+        subject: keyName,
+        apiKeyId: keyId,
+        models: topModel ? [topModel] : [],
+        message: `"${keyName}" requests spiked to ${todayReqs.toLocaleString()} (+${changePct.toFixed(0)}% vs ${Math.round(baseMean).toLocaleString()}/day baseline)${topModel ? ` — ${topModel}` : ""}`,
         value: todayReqs,
         baseline: baseMean,
         changePct,
@@ -228,52 +244,90 @@ export function detectVolumeSpikes(
   return results;
 }
 
-// ── New model detector ─────────────────────────────────────────────────────
+// ── Key model shift detector ───────────────────────────────────────────────
+//
+// Fires when an API key uses a model today that it hasn't used before,
+// or when the key's dominant model shifts significantly.
+// This answers: "why did this key's cost change?" at the model level.
 
-export function detectNewModels(
+export function detectKeyModelShift(
   rows: UsageRow[],
   config: AlertConfig = DEFAULT_CONFIG
 ): DetectionResult[] {
   const results: DetectionResult[] = [];
   const allDates = sortedDates(rows);
 
-  if (allDates.length < 8) return results; // need enough history
+  if (allDates.length < config.minBaselineDays + 1) return results;
 
-  // "Recent" = last 7 days; "Prior" = before that
-  const recentCutoff = allDates[Math.max(0, allDates.length - 7)];
-  const recentRows = rows.filter((r) => r.date >= recentCutoff);
-  const priorRows = rows.filter((r) => r.date < recentCutoff);
+  const todayDate = allDates[allDates.length - 1];
+  const keyIds = [...new Set(rows.map((r) => r.apiKeyId))];
 
-  const priorModels = new Set(
-    priorRows.map((r) => `${r.provider}::${r.model}`)
-  );
-  const recentModels = new Set(
-    recentRows.map((r) => `${r.provider}::${r.model}`)
-  );
+  for (const keyId of keyIds) {
+    const keyRows = rows.filter((r) => r.apiKeyId === keyId);
+    const keyName = keyRows[0].apiKeyName;
+    const provider = keyRows[0].provider;
 
-  for (const key of recentModels) {
-    if (priorModels.has(key)) continue; // already knew about this model
+    const baselineRows = keyRows.filter((r) => r.date < todayDate);
+    const todayRows = keyRows.filter((r) => r.date === todayDate);
 
-    const [provider, model] = key.split("::");
-    const modelRecentRows = recentRows.filter(
-      (r) => r.provider === provider && r.model === model
-    );
-    const totalCost = modelRecentRows.reduce((s, r) => s + r.costUSD, 0);
-    const totalRequests = modelRecentRows.reduce((s, r) => s + r.requests, 0);
+    if (baselineRows.length === 0 || todayRows.length === 0) continue;
 
-    // Only alert if there's some activity worth noting
-    if (totalCost < 0.01 && totalRequests === 0) continue;
+    const baselineModels = new Set(baselineRows.map((r) => r.model));
+    const todayCosts = modelCostMap(todayRows);
+    const baselineCosts = modelCostMap(baselineRows);
 
-    results.push({
-      type: "new_model",
-      severity: "info",
-      provider,
-      subject: model,
-      message: `New model detected: ${model} (${provider}) — first seen in last 7 days, $${totalCost.toFixed(2)} / ${totalRequests} requests`,
-      value: totalCost,
-      baseline: 0,
-      changePct: 100,
-    });
+    // 1. New models on this key (not seen in baseline)
+    for (const [model, cost] of todayCosts) {
+      if (baselineModels.has(model)) continue;
+      if (cost < config.modelShiftMinCost) continue;
+
+      results.push({
+        type: "key_model_shift",
+        severity: cost > 1.0 ? "warning" : "info",
+        provider,
+        subject: keyName,
+        apiKeyId: keyId,
+        models: [model],
+        message: `"${keyName}" used ${model} for the first time ($${cost.toFixed(4)} today — not seen in prior ${allDates.length - 1} days)`,
+        value: cost,
+        baseline: 0,
+        changePct: 100,
+      });
+    }
+
+    // 2. Dominant model shifted to a different (existing) model
+    const baselineDominant = [...baselineCosts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+    const todayDominant = [...todayCosts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+
+    if (
+      baselineDominant &&
+      todayDominant &&
+      baselineDominant !== todayDominant &&
+      baselineModels.has(todayDominant)
+    ) {
+      const todayDominantCost = todayCosts.get(todayDominant) ?? 0;
+      // Only fire if the shift is significant (dominant today was minor in baseline)
+      const baselineDaysCount = allDates.length - 1;
+      const baselineDominantAvgCost = (baselineCosts.get(todayDominant) ?? 0) / baselineDaysCount;
+      const ratio = baselineDominantAvgCost > 0
+        ? todayDominantCost / baselineDominantAvgCost
+        : 0;
+
+      if (ratio > 3 && todayDominantCost >= config.modelShiftMinCost) {
+        results.push({
+          type: "key_model_shift",
+          severity: "info",
+          provider,
+          subject: keyName,
+          apiKeyId: keyId,
+          models: [todayDominant, baselineDominant],
+          message: `"${keyName}" shifted primary model from ${baselineDominant} to ${todayDominant} ($${todayDominantCost.toFixed(4)} today vs $${baselineDominantAvgCost.toFixed(4)}/day avg)`,
+          value: todayDominantCost,
+          baseline: baselineDominantAvgCost,
+          changePct: ratio * 100 - 100,
+        });
+      }
+    }
   }
 
   return results;
@@ -291,7 +345,6 @@ export function detectNewKeys(
 
   const cutoffDate = allDates[Math.max(0, allDates.length - config.newKeyLookbackDays)];
 
-  // Find keys first seen on or after the cutoff date
   const keyFirstSeen: Record<string, string> = {};
   const keyName: Record<string, string> = {};
   const keyProvider: Record<string, string> = {};
@@ -306,20 +359,23 @@ export function detectNewKeys(
   }
 
   for (const [keyId, firstSeen] of Object.entries(keyFirstSeen)) {
-    if (firstSeen < cutoffDate) continue; // key existed before our window
+    if (firstSeen < cutoffDate) continue;
 
     const keyRows = rows.filter((r) => r.apiKeyId === keyId);
     const totalCost = keyRows.reduce((s, r) => s + r.costUSD, 0);
     const totalRequests = keyRows.reduce((s, r) => s + r.requests, 0);
     const name = keyName[keyId];
     const provider = keyProvider[keyId];
+    const topModel = dominantModel(keyRows);
 
     results.push({
       type: "new_key",
       severity: totalCost > 10 ? "warning" : "info",
       provider,
       subject: name,
-      message: `New API key: "${name}" (${provider}) — first seen ${firstSeen}, $${totalCost.toFixed(2)} spend so far`,
+      apiKeyId: keyId,
+      models: topModel ? [topModel] : [],
+      message: `New API key "${name}" (${provider}) — first seen ${firstSeen}, $${totalCost.toFixed(2)} / ${totalRequests} requests${topModel ? ` via ${topModel}` : ""}`,
       value: totalCost,
       baseline: 0,
       changePct: 100,
@@ -338,7 +394,7 @@ export function detectAll(
   return [
     ...detectCostAnomalies(rows, config),
     ...detectVolumeSpikes(rows, config),
-    ...detectNewModels(rows, config),
+    ...detectKeyModelShift(rows, config),
     ...detectNewKeys(rows, config),
   ];
 }
