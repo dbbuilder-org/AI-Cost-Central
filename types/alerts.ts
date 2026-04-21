@@ -33,7 +33,8 @@ export interface AlertConfig {
   spikeZScore: number;          // z-score threshold, default 2.5
   spikeMinPct: number;          // minimum % increase to fire, default 50
   dropMaxPctOfBaseline: number; // fire if today < this% of baseline, default 15
-  minBaselineCost: number;      // ignore keys with baseline < this, default 0.50
+  minBaselineCost: number;      // ignore keys whose baseline avg < this $/day, default 1.00
+  minAlertDelta: number;        // minimum dollar change to fire any cost alert, default 1.00
   newKeyLookbackDays: number;   // days a key is considered "new", default 3
   minBaselineDays: number;      // need at least this many days for baseline, default 7
   modelShiftMinCost: number;    // ignore model shifts below this cost, default 0.01
@@ -43,7 +44,8 @@ export const DEFAULT_CONFIG: AlertConfig = {
   spikeZScore: 2.5,
   spikeMinPct: 50,
   dropMaxPctOfBaseline: 15,
-  minBaselineCost: 0.50,
+  minBaselineCost: 1.00,   // whole-dollar granularity: keys spending < $1/day avg are noise
+  minAlertDelta: 1.00,     // whole-dollar granularity: change must be ≥ $1 to matter
   newKeyLookbackDays: 3,
   minBaselineDays: 7,
   modelShiftMinCost: 0.01,

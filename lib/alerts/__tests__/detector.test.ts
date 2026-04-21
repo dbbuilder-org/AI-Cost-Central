@@ -117,9 +117,18 @@ describe("detectCostAnomalies", () => {
   });
 
   it("does NOT alert for low-baseline keys (below minBaselineCost)", () => {
-    const rows = normalRows("gpt-4o-mini", "openai", 0.1, 14, 0.01);
+    // baseline 0.10/day and today 0.01 — both below the $1/day threshold
+    const rows = normalRows("gpt-4o-mini", "openai", 0.10, 14, 0.01);
     const alerts = detectCostAnomalies(rows, DEFAULT_CONFIG);
     expect(alerts).toHaveLength(0);
+  });
+
+  it("does NOT alert when the dollar delta is below minAlertDelta", () => {
+    // baseline $1.10/day, today $5.00 — pct spike fires but delta is $3.90 which is ≥ $1
+    // so let's test a case where baseline is $1.10 and today is $1.60 — delta $0.50 < $1
+    const rows = normalRows("gpt-4o", "openai", 1.10, 14, 1.60);
+    const alerts = detectCostAnomalies(rows, DEFAULT_CONFIG);
+    expect(alerts.filter((a) => a.type === "cost_spike")).toHaveLength(0);
   });
 
   it("aggregates all models on the same key into a single series", () => {

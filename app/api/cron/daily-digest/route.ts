@@ -22,6 +22,7 @@ import { sendDailyBrief } from "@/lib/briefs/render-daily";
 import { loadBriefConfig } from "@/lib/briefs/config";
 import { detectAll } from "@/lib/alerts/detector";
 import { enrichWithAI } from "@/lib/alerts/analyzer";
+import { loadAlertConfig } from "@/lib/alerts/config";
 import type { Alert } from "@/types/alerts";
 
 export const maxDuration = 60; // provider API calls can be slow
@@ -57,8 +58,9 @@ export async function GET(req: NextRequest) {
 
     const data = computeDailyData(rows);
 
-    // Anomaly detection — always run, use AI enrichment when available
-    const detections = detectAll(rows);
+    // Anomaly detection — load config (tenant-aware when tenantId is available)
+    const alertConfig = await loadAlertConfig(/* tenantId */ undefined);
+    const detections = detectAll(rows, alertConfig);
     let alerts: Alert[] = [];
     if (config.anomalyEnabled && detections.length > 0) {
       const today = new Date().toISOString().slice(0, 10);

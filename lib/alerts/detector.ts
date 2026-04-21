@@ -142,11 +142,12 @@ export function detectCostAnomalies(
     const topModel = dominantModel(todayRows);
     const modelSuffix = topModel ? ` — ${topModel}` : "";
 
-    // Cost spike
+    // Cost spike — also require a minimum dollar delta (whole-dollar granularity)
     if (
       spikeDetected &&
       changePct > config.spikeMinPct &&
-      todayValue > config.minBaselineCost
+      todayValue > config.minBaselineCost &&
+      (todayValue - baseMean) >= config.minAlertDelta
     ) {
       const severity = determineSeverity("cost_spike", todayValue, baseMean, z);
       results.push({
@@ -163,12 +164,13 @@ export function detectCostAnomalies(
       });
     }
 
-    // Cost drop — only if key had meaningful baseline activity AND cost is non-zero today.
-    // Zero-cost days are skipped: a key simply not being called that day isn't an anomaly.
+    // Cost drop — only if key had meaningful baseline activity, cost is non-zero today,
+    // and the dollar drop is at least minAlertDelta (whole-dollar granularity).
     if (
       baseMean >= config.minBaselineCost &&
       todayValue > 0 &&
-      todayValue < (baseMean * config.dropMaxPctOfBaseline) / 100
+      todayValue < (baseMean * config.dropMaxPctOfBaseline) / 100 &&
+      (baseMean - todayValue) >= config.minAlertDelta
     ) {
       results.push({
         type: "cost_drop",
