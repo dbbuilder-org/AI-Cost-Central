@@ -170,7 +170,7 @@ export default function KeyDetailPage() {
     }
   };
 
-  const keyLabel = context?.displayName ?? displayName || keyId;
+  const keyLabel = (context?.displayName ?? displayName) || keyId;
 
   if (loading) {
     return (
