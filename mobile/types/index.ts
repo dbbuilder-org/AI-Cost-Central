@@ -1,6 +1,6 @@
 export type Provider = "openai" | "anthropic" | "google";
 export type AlertSeverity = "critical" | "warning" | "info";
-export type AlertType = "cost_spike" | "cost_drop" | "volume_spike" | "new_model" | "new_key";
+export type AlertType = "cost_spike" | "cost_drop" | "volume_spike" | "key_model_shift" | "new_key";
 export type DateRange = "7d" | "14d" | "28d";
 
 export interface DaySpend {

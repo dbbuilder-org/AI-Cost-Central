@@ -216,10 +216,29 @@ export const keyAlerts = pgTable("key_alerts", {
   changePct: numeric("change_pct", { precision: 8, scale: 2 }),
   models: text("models").array(),
   detectedAt: date("detected_at").notNull(),
+  aiEnriched: boolean("ai_enriched").notNull().default(false),
+  notifiedAt: timestamp("notified_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   uniqueIndex("key_alerts_dedup_idx").on(t.providerKeyId, t.alertType, t.detectedAt),
   index("key_alerts_date_idx").on(t.detectedAt),
+]);
+
+// ── Device Tokens (Expo push + SMS) ──────────────────────────────────────────
+// One row per registered mobile device. No FK to orgs — single-tenant app.
+
+export const deviceTokens = pgTable("device_tokens", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  token: text("token").notNull(),           // Expo push token (ExponentPushToken[...])
+  platform: text("platform"),              // ios|android
+  phone: text("phone"),                    // optional E.164, for Twilio SMS
+  notifyOnCritical: boolean("notify_on_critical").notNull().default(true),
+  notifyOnWarning: boolean("notify_on_warning").notNull().default(true),
+  notifyOnInfo: boolean("notify_on_info").notNull().default(false),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("device_tokens_token_idx").on(t.token),
 ]);
 
 // ── Invitations ───────────────────────────────────────────────────────────────
@@ -398,3 +417,5 @@ export type ModelPricing = typeof modelPricing.$inferSelect;
 export type OrgWebhook = typeof orgWebhooks.$inferSelect;
 export type RoutingExperiment = typeof routingExperiments.$inferSelect;
 export type NewRoutingExperiment = typeof routingExperiments.$inferInsert;
+export type DeviceToken = typeof deviceTokens.$inferSelect;
+export type NewDeviceToken = typeof deviceTokens.$inferInsert;

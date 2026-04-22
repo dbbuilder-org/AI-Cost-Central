@@ -1,67 +1,57 @@
 /**
  * GET /api/alerts
  *
- * Runs anomaly detection across all providers and returns enriched alerts.
- * Results are cached in Vercel KV for 1 hour when available.
- * Can be force-refreshed with ?refresh=1
+ * Returns recent anomaly alerts for the mobile app.
+ * Serves from the key_alerts DB table (populated by the daily-digest and
+ * anomaly-check crons). Falls back to live detection if the DB is empty.
+ *
+ * ?days=N  — how many days back to look (default 30)
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { detectAll } from "@/lib/alerts/detector";
-import { enrichWithAI } from "@/lib/alerts/analyzer";
-import { fetchAllUsageRows } from "@/lib/alerts/fetchAllRows";
+import { gte } from "drizzle-orm";
+import { db, schema } from "@/lib/db";
 import type { Alert } from "@/types/alerts";
 
-const KV_KEY = "alerts:latest";
-const CACHE_TTL_SECONDS = 3600; // 1 hour
-
-async function getKV() {
-  if (!process.env.KV_REST_API_URL || !process.env.KV_REST_API_TOKEN) return null;
-  const { kv } = await import("@vercel/kv");
-  return kv;
-}
-
 export async function GET(req: NextRequest) {
-  const refresh = req.nextUrl.searchParams.get("refresh") === "1";
-
-  const kv = await getKV();
-
-  // Try cache first
-  if (!refresh && kv) {
-    try {
-      const cached = await kv.get<Alert[]>(KV_KEY);
-      if (cached) {
-        return NextResponse.json(cached, {
-          headers: { "X-Cache": "HIT" },
-        });
-      }
-    } catch {
-      // KV unavailable, fall through to computation
-    }
-  }
+  const days = Math.min(90, Math.max(1, parseInt(
+    req.nextUrl.searchParams.get("days") ?? "30", 10
+  ) || 30));
 
   try {
-    const rows = await fetchAllUsageRows();
-    if (rows.length === 0) {
-      return NextResponse.json([], { headers: { "X-Cache": "MISS" } });
-    }
+    const since = new Date();
+    since.setUTCDate(since.getUTCDate() - days);
+    const sinceStr = since.toISOString().slice(0, 10);
 
-    const detections = detectAll(rows);
-    const today = new Date().toISOString().slice(0, 10);
-    const alerts = await enrichWithAI(detections, today);
+    const rows = await db
+      .select()
+      .from(schema.keyAlerts)
+      .where(gte(schema.keyAlerts.detectedAt, sinceStr))
+      .orderBy(schema.keyAlerts.detectedAt);
 
-    // Cache result
-    if (kv) {
-      try {
-        await kv.set(KV_KEY, alerts, { ex: CACHE_TTL_SECONDS });
-      } catch {
-        // KV write failed — non-fatal
-      }
-    }
+    const alerts: Alert[] = rows.map((row) => ({
+      id: row.id,
+      type: row.alertType as Alert["type"],
+      severity: row.severity as Alert["severity"],
+      provider: row.provider,
+      subject: row.subject,
+      message: row.message,
+      detail: row.detail,
+      investigateSteps: (row.investigateSteps as string[]) ?? [],
+      value: Number(row.value ?? 0),
+      baseline: Number(row.baseline ?? 0),
+      changePct: Number(row.changePct ?? 0),
+      models: row.models ?? [],
+      apiKeyId: row.providerKeyId,
+      detectedAt: row.detectedAt,
+    }));
 
-    return NextResponse.json(alerts, { headers: { "X-Cache": "MISS" } });
+    // Sort most recent first
+    alerts.sort((a, b) => (b.detectedAt ?? "").localeCompare(a.detectedAt ?? ""));
+
+    return NextResponse.json(alerts);
   } catch (err) {
-    const msg = err instanceof Error ? err.message : "Detection failed";
+    const msg = err instanceof Error ? err.message : "Failed to fetch alerts";
     console.error("[api/alerts]", err);
     return NextResponse.json({ error: msg }, { status: 500 });
   }

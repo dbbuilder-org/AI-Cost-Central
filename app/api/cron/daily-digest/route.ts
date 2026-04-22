@@ -93,8 +93,19 @@ async function persistAlerts(alerts: Alert[], todayStr: string): Promise<void> {
           changePct: String(alert.changePct ?? 0),
           models: alert.models ?? [],
           detectedAt: todayStr,
+          aiEnriched: true,
         })
-        .onConflictDoNothing(); // safe for re-runs
+        .onConflictDoUpdate({
+          // Upgrade fallback alerts inserted by the hourly anomaly-check
+          target: [schema.keyAlerts.providerKeyId, schema.keyAlerts.alertType, schema.keyAlerts.detectedAt],
+          set: {
+            detail: alert.detail ?? "",
+            investigateSteps: (alert.investigateSteps ?? []) as unknown as Record<string, unknown>,
+            severity: alert.severity,
+            message: alert.message,
+            aiEnriched: true,
+          },
+        });
     } catch (err) {
       console.warn("[cron] Failed to persist alert:", alert.id, err);
     }
@@ -110,7 +121,9 @@ async function loadCachedAlerts(todayStr: string): Promise<Alert[] | null> {
       .from(schema.keyAlerts)
       .where(eq(schema.keyAlerts.detectedAt, todayStr));
 
-    if (rows.length === 0) return null;
+    // Return null (force re-analysis) if any alerts are un-enriched fallbacks
+    // from the hourly anomaly-check cron. The daily digest will AI-enrich them.
+    if (rows.length === 0 || rows.some((r) => !r.aiEnriched)) return null;
 
     return rows.map((row) => ({
       id: row.id,
