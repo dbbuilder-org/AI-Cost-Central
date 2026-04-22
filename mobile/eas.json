@@ -14,10 +14,7 @@
       }
     },
     "production": {
-      "autoIncrement": true,
-      "ios": {
-        "enterpriseProvisioning": "automatic"
-      }
+      "autoIncrement": true
     }
   },
   "submit": {

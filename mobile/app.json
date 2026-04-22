@@ -16,7 +16,9 @@
       "supportsTablet": true,
       "bundleIdentifier": "net.servicevision.aicostcentral",
       "infoPlist": {
-        "UIBackgroundModes": ["remote-notification"]
+        "UIBackgroundModes": [
+          "remote-notification"
+        ]
       }
     },
     "android": {
@@ -50,8 +52,12 @@
     "scheme": "aicostcentral",
     "extra": {
       "eas": {
-        "projectId": "your-eas-project-id"
+        "projectId": "f3eac924-c4ae-4f72-8d72-566887f6df9d"
+      },
+      "router": {
+        "origin": false
       }
-    }
+    },
+    "owner": "servicevision"
   }
 }
