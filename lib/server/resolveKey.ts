@@ -44,10 +44,30 @@ export async function resolveProviderKey(
     }
   }
 
+  // 2. Env var fallback — works for single-tenant deployments where keys
+  //    are set as env vars rather than stored in the DB.
+  const envKey = resolveEnvKey(provider);
+  if (envKey) return envKey;
+
   throw new Error(
     `No active API key found for provider "${provider}" in org "${orgId}". ` +
     "Add one in Settings → API Keys."
   );
+}
+
+function resolveEnvKey(provider: Provider): string | null {
+  switch (provider) {
+    case "openai":
+      return process.env.OPENAI_ADMIN_KEY ?? process.env.OPENAI_API_KEY ?? null;
+    case "anthropic":
+      return process.env.ANTHROPIC_ADMIN_KEY ?? process.env.ANTHROPIC_API_KEY ?? null;
+    case "google":
+      return process.env.GOOGLE_AI_API_KEY ?? process.env.GEMINI_API_KEY ?? null;
+    case "github":
+      return process.env.GITHUB_TOKEN ?? null;
+    default:
+      return null;
+  }
 }
 
 /**
