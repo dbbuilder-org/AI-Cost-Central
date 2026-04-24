@@ -62,7 +62,7 @@ function resolveEnvKey(provider: Provider): string | null {
     case "anthropic":
       return process.env.ANTHROPIC_ADMIN_KEY ?? process.env.ANTHROPIC_API_KEY ?? null;
     case "google":
-      return process.env.GOOGLE_AI_API_KEY ?? process.env.GEMINI_API_KEY ?? null;
+      return process.env.GOOGLE_SERVICE_ACCOUNT_JSON ?? process.env.GOOGLE_AI_API_KEY ?? process.env.GEMINI_API_KEY ?? null;
     case "github":
       return process.env.GITHUB_TOKEN ?? null;
     default:
