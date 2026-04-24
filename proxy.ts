@@ -9,6 +9,7 @@ const isPublicRoute = createRouteMatcher([
   "/sign-up(.*)",               // Clerk auth
   "/api/webhooks/(.*)",         // Clerk + Stripe webhooks (validated by signature in handler)
   "/api/cron/(.*)",             // Cron jobs (validated by x-cron-secret header in each handler)
+  "/api/internal/(.*)",         // Internal server-to-server webhooks (validated by x-internal-secret)
   "/api/health",                // Health check
 ]);
 

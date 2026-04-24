@@ -5,13 +5,12 @@
  * Used by /api/cron/daily-digest which runs before org onboarding is complete,
  * and by any context where the full multi-tenant DB pipeline is unavailable.
  *
- * Providers supported: OpenAI (admin key), Anthropic (admin key).
- * Google is omitted — its service account setup is more complex and usage
- * is low enough that OpenAI + Anthropic covers the anomaly detection need.
+ * Providers supported: OpenAI (admin key), Anthropic (admin key), Google (service account JSON).
  */
 
 import { transformOpenAI, type OAIRawData } from "@/lib/transform";
 import type { UsageRow } from "@/types";
+import { GoogleAuth } from "google-auth-library";
 
 const OAI_BASE = "https://api.openai.com/v1/organization";
 
@@ -170,6 +169,168 @@ async function fetchAnthropicRows(days: number): Promise<UsageRow[]> {
   }
 }
 
+// ── Google helpers ─────────────────────────────────────────────────────────
+
+const GOOGLE_PRICING: Record<string, { input: number; output: number }> = {
+  "gemini-3.1-pro-preview":        { input: 4.00,   output: 18.00 },
+  "gemini-3.1-flash-lite-preview": { input: 0.25,   output: 1.50  },
+  "gemini-3-pro-preview":          { input: 4.00,   output: 18.00 },
+  "gemini-3-flash-preview":        { input: 0.50,   output: 3.00  },
+  "gemini-2.5-pro":                { input: 1.25,   output: 10.00 },
+  "gemini-2.5-flash":              { input: 0.30,   output: 2.50  },
+  "gemini-2.5-flash-lite":         { input: 0.10,   output: 0.40  },
+  "gemini-2.0-flash":              { input: 0.10,   output: 0.40  },
+  "gemini-2.0-flash-lite":         { input: 0.075,  output: 0.30  },
+  "gemini-1.5-pro":                { input: 1.25,   output: 5.00  },
+  "gemini-1.5-flash":              { input: 0.075,  output: 0.30  },
+  "gemini-1.5-flash-8b":           { input: 0.0375, output: 0.15  },
+  "veo-3.1":                       { input: 0,      output: 0     },
+  "veo-3.0":                       { input: 0,      output: 0     },
+  "veo-2.0":                       { input: 0,      output: 0     },
+  "imagen-4.0":                    { input: 0,      output: 0     },
+  "gemini-embedding":              { input: 0.15,   output: 0     },
+};
+
+const IMAGE_MODEL_PATTERNS = ["image", "imagen", "veo", "vision", "photo", "preview-image", "flash-image"];
+
+function isImageModel(modelId: string): boolean {
+  const lower = modelId.toLowerCase();
+  return IMAGE_MODEL_PATTERNS.some((p) => lower.includes(p));
+}
+
+function estimateInputTokens(modelId: string, outputTokens: number): number {
+  return isImageModel(modelId) ? Math.round(outputTokens * 0.02) : outputTokens;
+}
+
+function calcGoogleCost(modelId: string, inputTokens: number, outputTokens: number): number {
+  const exact = GOOGLE_PRICING[modelId];
+  const p = exact ?? GOOGLE_PRICING[Object.keys(GOOGLE_PRICING).find((k) => modelId.startsWith(k)) ?? ""];
+  if (!p) return 0;
+  return (p.input / 1_000_000) * inputTokens + (p.output / 1_000_000) * outputTokens;
+}
+
+interface TimeSeriesPoint {
+  interval: { startTime: string; endTime: string };
+  value: { int64Value?: string; doubleValue?: number };
+}
+interface TimeSeries {
+  metric: { labels: Record<string, string> };
+  resource: { labels: Record<string, string> };
+  points: TimeSeriesPoint[];
+}
+
+async function googleQueryMonitoring(
+  token: string,
+  projectId: string,
+  metricType: string,
+  startTime: string,
+  endTime: string
+): Promise<TimeSeries[]> {
+  const params = new URLSearchParams({
+    filter: `metric.type="${metricType}"`,
+    "interval.startTime": startTime,
+    "interval.endTime": endTime,
+    "aggregation.alignmentPeriod": "86400s",
+    "aggregation.perSeriesAligner": "ALIGN_SUM",
+    "aggregation.groupByFields": "metric.labels.model",
+    "aggregation.crossSeriesReducer": "REDUCE_SUM",
+  });
+  const res = await fetch(
+    `https://monitoring.googleapis.com/v3/projects/${projectId}/timeSeries?${params}`,
+    { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(20_000) }
+  );
+  if (!res.ok) return [];
+  const data = await res.json() as { timeSeries?: TimeSeries[] };
+  return data.timeSeries ?? [];
+}
+
+function daysAgoIso(n: number): string {
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() - n);
+  d.setUTCHours(0, 0, 0, 0);
+  return d.toISOString();
+}
+
+async function fetchGoogleRows(days: number): Promise<UsageRow[]> {
+  const saJson = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+  if (!saJson) return [];
+
+  let sa: { project_id: string };
+  try {
+    sa = JSON.parse(saJson);
+  } catch {
+    console.error("[adminUsage/google] GOOGLE_SERVICE_ACCOUNT_JSON is not valid JSON");
+    return [];
+  }
+
+  const projectId = sa.project_id;
+  const startTime = daysAgoIso(days);
+  const endTime = new Date().toISOString();
+
+  let accessToken: string;
+  try {
+    const auth = new GoogleAuth({
+      credentials: sa as never,
+      scopes: [
+        "https://www.googleapis.com/auth/monitoring.read",
+        "https://www.googleapis.com/auth/cloud-platform",
+      ],
+    });
+    const client = await auth.getClient();
+    const tok = await client.getAccessToken();
+    if (!tok.token) throw new Error("empty token");
+    accessToken = tok.token;
+  } catch (e) {
+    console.error("[adminUsage/google] auth failed:", e instanceof Error ? e.message : e);
+    return [];
+  }
+
+  try {
+    const outputTokenSeries = await googleQueryMonitoring(
+      accessToken,
+      projectId,
+      "generativelanguage.googleapis.com/generate_content_usage_output_token_count",
+      startTime,
+      endTime
+    );
+
+    const aggregated: Record<string, { date: string; model: string; inputTokens: number; outputTokens: number; costUSD: number }> = {};
+
+    for (const ts of outputTokenSeries) {
+      const model = ts.metric.labels?.model ?? "unknown";
+      for (const pt of ts.points) {
+        const date = pt.interval.endTime.slice(0, 10);
+        const value = parseInt(pt.value.int64Value ?? "0") || (pt.value.doubleValue ?? 0);
+        const key = `${date}|${model}`;
+        if (!aggregated[key]) aggregated[key] = { date, model, inputTokens: 0, outputTokens: 0, costUSD: 0 };
+        aggregated[key].outputTokens += value;
+      }
+    }
+
+    for (const row of Object.values(aggregated)) {
+      row.inputTokens = estimateInputTokens(row.model, row.outputTokens);
+      row.costUSD = calcGoogleCost(row.model, row.inputTokens, row.outputTokens);
+    }
+
+    return Object.values(aggregated).map((row): UsageRow => ({
+      provider: "google",
+      apiKeyId: "google-ai-studio",
+      apiKeyName: "Google AI Studio",
+      model: row.model,
+      date: row.date,
+      inputTokens: row.inputTokens,
+      outputTokens: row.outputTokens,
+      requests: 0,
+      costUSD: row.costUSD,
+      costPer1KInput: 0,
+      costPer1KOutput: 0,
+    }));
+  } catch (e) {
+    console.error("[adminUsage/google]", e instanceof Error ? e.message : e);
+    return [];
+  }
+}
+
 // ── Public API ─────────────────────────────────────────────────────────────
 
 /**
@@ -177,9 +338,10 @@ async function fetchAnthropicRows(days: number): Promise<UsageRow[]> {
  * Falls back gracefully if a provider key is missing or the API errors.
  */
 export async function fetchAdminUsageRows(days = 14): Promise<UsageRow[]> {
-  const [openaiRows, anthropicRows] = await Promise.all([
+  const [openaiRows, anthropicRows, googleRows] = await Promise.all([
     fetchOpenAIRows(days),
     fetchAnthropicRows(days),
+    fetchGoogleRows(days),
   ]);
-  return [...openaiRows, ...anthropicRows];
+  return [...openaiRows, ...anthropicRows, ...googleRows];
 }
