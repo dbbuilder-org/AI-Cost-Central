@@ -19,8 +19,8 @@ Required env vars:
 
 import base64
 import json
-import logging
 import os
+import sys
 from typing import Any
 
 import functions_framework
@@ -28,8 +28,14 @@ import requests
 from google.cloud import service_usage_v1
 from google.api_core.exceptions import GoogleAPIError
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+
+def log(msg: str) -> None:
+    """Print to stdout (captured by Cloud Logging for Cloud Run / Gen2 functions)."""
+    print(msg, flush=True)
+
+
+def log_err(msg: str) -> None:
+    print(msg, file=sys.stderr, flush=True)
 
 GENERATIVE_LANGUAGE_API = "generativelanguage.googleapis.com"
 
@@ -59,14 +65,14 @@ def disable_generative_language_api(project_id: str) -> bool:
       gcloud services enable generativelanguage.googleapis.com --project=PROJECT_ID
     """
     if os.environ.get("DISABLE_API_AT_100PCT", "true").lower() != "true":
-        logger.info("[budget] DISABLE_API_AT_100PCT is not 'true' — skipping API disable")
+        log("[budget] DISABLE_API_AT_100PCT is not 'true' — skipping API disable")
         return False
 
     try:
         client = service_usage_v1.ServiceUsageClient()
         service_name = f"projects/{project_id}/services/{GENERATIVE_LANGUAGE_API}"
 
-        logger.warning(f"[budget] Disabling {GENERATIVE_LANGUAGE_API} on project {project_id}")
+        log(f"[budget][WARNING] Disabling {GENERATIVE_LANGUAGE_API} on project {project_id}")
         operation = client.disable_service(
             request=service_usage_v1.DisableServiceRequest(
                 name=service_name,
@@ -74,11 +80,11 @@ def disable_generative_language_api(project_id: str) -> bool:
             )
         )
         operation.result(timeout=60)
-        logger.warning(f"[budget] {GENERATIVE_LANGUAGE_API} disabled successfully on {project_id}")
+        log(f"[budget][WARNING] {GENERATIVE_LANGUAGE_API} disabled successfully on {project_id}")
         return True
 
     except GoogleAPIError as e:
-        logger.error(f"[budget] Failed to disable API: {e}")
+        log_err(f"[budget] Failed to disable API: {e}")
         return False
 
 
@@ -91,7 +97,7 @@ def post_to_aicostcentral(payload: dict[str, Any]) -> bool:
     secret = os.environ.get("INTERNAL_WEBHOOK_SECRET")
 
     if not url or not secret:
-        logger.error("[budget] AICOSTCENTRAL_WEBHOOK_URL or INTERNAL_WEBHOOK_SECRET not set")
+        log_err("[budget] AICOSTCENTRAL_WEBHOOK_URL or INTERNAL_WEBHOOK_SECRET not set")
         return False
 
     try:
@@ -106,15 +112,15 @@ def post_to_aicostcentral(payload: dict[str, Any]) -> bool:
         )
         if resp.ok:
             try:
-                logger.info(f"[budget] Webhook accepted: {resp.json()}")
+                log(f"[budget] Webhook accepted: {resp.json()}")
             except Exception:
-                logger.info(f"[budget] Webhook accepted (non-JSON response): {resp.status_code}")
+                log(f"[budget] Webhook accepted (non-JSON response): {resp.status_code}")
             return True
         else:
-            logger.error(f"[budget] Webhook rejected {resp.status_code}: {resp.text[:300]}")
+            log_err(f"[budget] Webhook rejected {resp.status_code}: {resp.text[:300]}")
             return False
     except requests.RequestException as e:
-        logger.error(f"[budget] Webhook request failed: {e}")
+        log_err(f"[budget] Webhook request failed: {e}")
         return False
 
 
@@ -141,11 +147,11 @@ def google_budget_alert(cloud_event: Any) -> None:
         # Decode Pub/Sub payload
         raw_data = cloud_event.data.get("message", {}).get("data", "")
         if not raw_data:
-            logger.error("[budget] No data in Pub/Sub message")
+            log_err("[budget] No data in Pub/Sub message")
             return
 
         message = json.loads(base64.b64decode(raw_data).decode("utf-8"))
-        logger.info(f"[budget] Received: {json.dumps(message)}")
+        log(f"[budget] Received: {json.dumps(message)}")
 
         cost_amount: float = float(message.get("costAmount", 0))
         budget_amount: float = float(message.get("budgetAmount", 0))
@@ -154,13 +160,13 @@ def google_budget_alert(cloud_event: Any) -> None:
         project_id: str = os.environ.get("GCP_PROJECT_ID", "")
 
         if budget_amount <= 0:
-            logger.warning("[budget] budgetAmount is 0 — skipping")
+            log("[budget][WARNING] budgetAmount is 0 — skipping")
             return
 
         threshold_pct = threshold * 100  # e.g. 0.9 → 90.0
         severity = threshold_to_severity(threshold)
 
-        logger.info(
+        log(
             f"[budget] Threshold crossed: {threshold_pct:.0f}% "
             f"(${cost_amount:.2f} / ${budget_amount:.2f}) — severity={severity}"
         )
@@ -182,7 +188,7 @@ def google_budget_alert(cloud_event: Any) -> None:
         })
 
     except (json.JSONDecodeError, KeyError, ValueError) as e:
-        logger.error(f"[budget] Failed to parse Pub/Sub message: {e}")
+        log_err(f"[budget] Failed to parse Pub/Sub message: {e}")
     except Exception as e:
-        logger.error(f"[budget] Unexpected error: {e}", exc_info=True)
+        log_err(f"[budget] Unexpected error: {e}")
         raise  # Re-raise so GCP retries the message
