@@ -84,5 +84,15 @@ export async function fetchAllUsageRows(): Promise<UsageRow[]> {
     (id) => fetchRowsForOrg(id).catch(() => [] as UsageRow[]),
     CONCURRENCY
   );
-  return perOrg.flat();
+  const allRows = perOrg.flat();
+
+  // Exclude pre-breach / compromised-key data from analysis.
+  // BASELINE_START_DATE (YYYY-MM-DD) marks the first clean day.
+  // Data before this date is excluded from anomaly detection and briefs
+  // so poisoned historical spend doesn't inflate the baseline.
+  const baselineStart = process.env.BASELINE_START_DATE;
+  if (baselineStart) {
+    return allRows.filter((r) => r.date >= baselineStart);
+  }
+  return allRows;
 }

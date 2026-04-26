@@ -114,16 +114,37 @@ async function fetchOpenAIRows(days: number): Promise<UsageRow[]> {
 
 // ── Anthropic helpers ──────────────────────────────────────────────────────
 
-interface AnthropicUsageEntry {
-  timestamp: string;      // ISO date
-  model: string;
-  api_key_id: string;
-  api_key_name: string;
-  input_tokens: number;
-  output_tokens: number;
-  cache_read_input_tokens: number;
-  cache_creation_input_tokens: number;
-  cost_usd: number;
+// Pricing in USD per 1M tokens
+const ANTHROPIC_PRICING: Record<string, { input: number; output: number; cacheRead: number }> = {
+  "claude-opus-4-6":           { input: 15.00, output: 75.00, cacheRead: 1.50 },
+  "claude-sonnet-4-6":         { input:  3.00, output: 15.00, cacheRead: 0.30 },
+  "claude-sonnet-4-20250514":  { input:  3.00, output: 15.00, cacheRead: 0.30 },
+  "claude-haiku-4-5-20251001": { input:  1.00, output:  5.00, cacheRead: 0.10 },
+  "claude-3-5-sonnet-20241022":{ input:  3.00, output: 15.00, cacheRead: 0.30 },
+  "claude-3-5-haiku-20241022": { input:  0.80, output:  4.00, cacheRead: 0.08 },
+  "claude-3-haiku-20240307":   { input:  0.25, output:  1.25, cacheRead: 0.03 },
+  "claude-3-opus-20240229":    { input: 15.00, output: 75.00, cacheRead: 1.50 },
+};
+
+function calcAnthropicCost(model: string, uncachedIn: number, cacheRead: number, out: number): number {
+  const p = ANTHROPIC_PRICING[model] ??
+    Object.entries(ANTHROPIC_PRICING).find(([k]) => model.startsWith(k))?.[1];
+  if (!p) return 0;
+  const M = 1_000_000;
+  return (p.input / M) * uncachedIn + (p.cacheRead / M) * cacheRead + (p.output / M) * out;
+}
+
+interface AnthropicUsageBucket {
+  starting_at: string;
+  ending_at: string;
+  results: {
+    uncached_input_tokens: number;
+    cache_read_input_tokens: number;
+    cache_creation?: { ephemeral_5m_input_tokens?: number; ephemeral_1h_input_tokens?: number };
+    output_tokens: number;
+    model: string;
+    api_key_id: string | null;
+  }[];
 }
 
 async function fetchAnthropicRows(days: number): Promise<UsageRow[]> {
@@ -132,37 +153,68 @@ async function fetchAnthropicRows(days: number): Promise<UsageRow[]> {
 
   const startDate = new Date();
   startDate.setUTCDate(startDate.getUTCDate() - days);
-  const startStr = startDate.toISOString().slice(0, 10);
+  startDate.setUTCHours(0, 0, 0, 0);
+  // Use URLSearchParams so the ISO timestamp is properly percent-encoded
+  const params = new URLSearchParams({
+    starting_at: startDate.toISOString(),
+    bucket_width: "1d",
+    limit: "31",
+  });
+  params.append("group_by[]", "model");
+  params.append("group_by[]", "api_key_id");
+
+  // Fetch key names for display
+  const keyNames: Record<string, string> = {};
+  try {
+    const knRes = await fetch(
+      "https://api.anthropic.com/v1/organizations/api_keys?limit=100",
+      { headers: { "anthropic-version": "2023-06-01", "x-api-key": token }, signal: AbortSignal.timeout(10_000) }
+    );
+    if (knRes.ok) {
+      const kd = await knRes.json() as { data?: { id: string; name: string }[] };
+      for (const k of kd.data ?? []) keyNames[k.id] = k.name;
+    }
+  } catch { /* non-fatal */ }
 
   try {
-    const res = await fetch(
-      `https://api.anthropic.com/v1/organizations/usage?start_date=${startStr}&granularity=daily&limit=100`,
-      {
-        headers: {
-          "anthropic-version": "2023-06-01",
-          "x-api-key": token,
-        },
+    const buckets: AnthropicUsageBucket[] = [];
+    let page: string | null = null;
+    do {
+      const url = `https://api.anthropic.com/v1/organizations/usage_report/messages?${params}${page ? `&page=${encodeURIComponent(page)}` : ""}`;
+      const res = await fetch(url, {
+        headers: { "anthropic-version": "2023-06-01", "x-api-key": token },
         signal: AbortSignal.timeout(20_000),
+      });
+      if (!res.ok) return [];
+      const data = await res.json() as { data: AnthropicUsageBucket[]; has_more: boolean; next_page?: string };
+      buckets.push(...data.data);
+      page = data.has_more ? (data.next_page ?? null) : null;
+    } while (page);
+
+    const rows: UsageRow[] = [];
+    for (const bucket of buckets) {
+      const date = bucket.starting_at.slice(0, 10);
+      for (const r of bucket.results) {
+        const tot = r.uncached_input_tokens + r.output_tokens + r.cache_read_input_tokens;
+        if (tot === 0) continue;
+        const keyId = r.api_key_id ?? "unknown";
+        const costUSD = calcAnthropicCost(r.model, r.uncached_input_tokens, r.cache_read_input_tokens, r.output_tokens);
+        rows.push({
+          provider: "anthropic",
+          apiKeyId: keyId,
+          apiKeyName: keyNames[keyId] ?? keyId,
+          model: r.model,
+          date,
+          inputTokens: r.uncached_input_tokens + r.cache_read_input_tokens,
+          outputTokens: r.output_tokens,
+          requests: 0,
+          costUSD,
+          costPer1KInput: 0,
+          costPer1KOutput: 0,
+        });
       }
-    );
-    if (!res.ok) return [];
-
-    const data = await res.json() as { data?: AnthropicUsageEntry[] };
-    const entries = data.data ?? [];
-
-    return entries.map((e): UsageRow => ({
-      provider: "anthropic",
-      apiKeyId: e.api_key_id,
-      apiKeyName: e.api_key_name,
-      model: e.model,
-      date: e.timestamp.slice(0, 10),
-      inputTokens: e.input_tokens + e.cache_read_input_tokens,
-      outputTokens: e.output_tokens,
-      requests: 0, // Anthropic usage API doesn't return request counts
-      costUSD: e.cost_usd ?? 0,
-      costPer1KInput: 0,
-      costPer1KOutput: 0,
-    }));
+    }
+    return rows;
   } catch (e) {
     console.error("[adminUsage/anthropic]", e instanceof Error ? e.message : e);
     return [];
@@ -312,7 +364,11 @@ async function fetchGoogleRows(days: number): Promise<UsageRow[]> {
       row.costUSD = calcGoogleCost(row.model, row.inputTokens, row.outputTokens);
     }
 
-    return Object.values(aggregated).map((row): UsageRow => ({
+    // Filter out zero-output rows — no output tokens means the request was rejected
+    // before generating any content (auth failure, quota exceeded, etc.)
+    const validRows = Object.values(aggregated).filter((row) => row.outputTokens > 0);
+
+    return validRows.map((row): UsageRow => ({
       provider: "google",
       apiKeyId: "google-ai-studio",
       apiKeyName: "Google AI Studio",
