@@ -9,11 +9,15 @@ const SEVERITY_COLORS = {
 };
 
 const TYPE_LABELS: Record<Alert["type"], string> = {
-  cost_spike:       "Cost Spike",
-  cost_drop:        "Cost Drop",
-  volume_spike:     "Volume Spike",
-  key_model_shift:  "Model Shift",
-  new_key:          "New Key",
+  cost_spike:             "Cost Spike",
+  cost_drop:              "Cost Drop",
+  volume_spike:           "Volume Spike",
+  key_model_shift:        "Model Shift",
+  new_key:                "New Key",
+  key_velocity:           "Key Velocity",
+  claude_code_on_app_key: "Claude Code Detected",
+  key_rotation_spike:     "Key Rotation Spike",
+  render_service_anomaly: "Rogue Service",
 };
 
 const PROVIDER_BADGE: Record<string, { label: string; cls: string }> = {

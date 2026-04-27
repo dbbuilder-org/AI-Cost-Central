@@ -163,16 +163,20 @@ async function fetchAnthropicRows(days: number): Promise<UsageRow[]> {
   params.append("group_by[]", "model");
   params.append("group_by[]", "api_key_id");
 
-  // Fetch key names for display
+  // Fetch key names and creation dates for display + velocity detection
   const keyNames: Record<string, string> = {};
+  const keyCreatedAt: Record<string, string> = {}; // keyId → YYYY-MM-DD
   try {
     const knRes = await fetch(
       "https://api.anthropic.com/v1/organizations/api_keys?limit=100",
       { headers: { "anthropic-version": "2023-06-01", "x-api-key": token }, signal: AbortSignal.timeout(10_000) }
     );
     if (knRes.ok) {
-      const kd = await knRes.json() as { data?: { id: string; name: string }[] };
-      for (const k of kd.data ?? []) keyNames[k.id] = k.name;
+      const kd = await knRes.json() as { data?: { id: string; name: string; created_at?: string }[] };
+      for (const k of kd.data ?? []) {
+        keyNames[k.id] = k.name;
+        if (k.created_at) keyCreatedAt[k.id] = k.created_at.slice(0, 10);
+      }
     }
   } catch { /* non-fatal */ }
 
@@ -211,6 +215,11 @@ async function fetchAnthropicRows(days: number): Promise<UsageRow[]> {
           costUSD,
           costPer1KInput: 0,
           costPer1KOutput: 0,
+          // Token breakdown for Claude Code fingerprint detection
+          cacheReadTokens: r.cache_read_input_tokens,
+          uncachedInputTokens: r.uncached_input_tokens,
+          // Key creation date for velocity detection
+          providerKeyCreatedAt: keyCreatedAt[keyId],
         });
       }
     }

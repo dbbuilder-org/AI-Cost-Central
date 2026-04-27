@@ -10,6 +10,12 @@ export interface UsageRow {
   costUSD: number;
   costPer1KInput: number;
   costPer1KOutput: number;
+  // Anthropic-only: token breakdown for Claude Code fingerprint detection
+  cacheReadTokens?: number;      // cache_read_input_tokens
+  uncachedInputTokens?: number;  // uncached_input_tokens (excludes cache hits)
+  // Provider key creation date — populated from admin API key list
+  // Used by key velocity detector to catch same-day creation + usage
+  providerKeyCreatedAt?: string; // YYYY-MM-DD
 }
 
 export interface ApiKeyInfo {

@@ -86,15 +86,26 @@ function modelRows(topModels: DailyBriefData["yesterday"]["topModels"]): string 
 
 function keyRows(topKeys: DailyBriefData["yesterday"]["topKeys"]): string {
   return topKeys
-    .map((k) => `
+    .map((k) => {
+      const modelBadges = k.topModels
+        .map(
+          (m) =>
+            `<span style="display:inline-block;background:#1f2937;color:#9ca3af;font-size:9px;padding:1px 5px;border-radius:3px;margin:1px 2px 1px 0;white-space:nowrap">${m.model} <span style="color:#6b7280">${m.pct.toFixed(0)}%</span></span>`
+        )
+        .join("");
+      return `
       <tr style="border-bottom:1px solid #1f2937">
-        <td style="padding:5px 8px">
-          ${providerBadge(k.provider)}
-          <span style="color:#e5e7eb;margin-left:4px;font-size:11px">${k.apiKeyName}</span>
+        <td style="padding:6px 8px">
+          <div style="display:flex;align-items:center;gap:4px;margin-bottom:3px">
+            ${providerBadge(k.provider)}
+            <span style="color:#e5e7eb;font-size:11px;font-weight:500">${k.apiKeyName}</span>
+          </div>
+          ${modelBadges ? `<div style="padding-left:2px">${modelBadges}</div>` : ""}
         </td>
-        <td style="padding:5px 8px;color:#fff;font-weight:600;font-size:11px;text-align:right;white-space:nowrap">$${k.costUSD.toFixed(4)}</td>
-        <td style="padding:5px 8px;color:#6b7280;font-size:10px;text-align:right;white-space:nowrap">${k.requests.toLocaleString()} reqs</td>
-      </tr>`)
+        <td style="padding:6px 8px;color:#fff;font-weight:600;font-size:11px;text-align:right;white-space:nowrap;vertical-align:top">$${k.costUSD.toFixed(4)}</td>
+        <td style="padding:6px 8px;color:#6b7280;font-size:10px;text-align:right;white-space:nowrap;vertical-align:top">${k.requests.toLocaleString()} reqs</td>
+      </tr>`;
+    })
     .join("");
 }
 
@@ -126,7 +137,8 @@ function alertSummary(alerts: Alert[]): string {
 export function renderDailyEmail(
   data: DailyBriefData,
   alerts: Alert[],
-  dashboardUrl: string
+  dashboardUrl: string,
+  narrative = ""
 ): string {
   const fmtDate = (s: string) =>
     new Date(s + "T00:00:00Z").toLocaleDateString("en-US", {
@@ -137,6 +149,9 @@ export function renderDailyEmail(
 
   const body = `
     ${emailHeader("Daily Brief", `Spend summary for ${fmtDate(data.reportDate)}`)}
+
+    <!-- AI narrative (empty string if generation failed) -->
+    ${narrative}
 
     <!-- Headline metrics -->
     <div style="display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap">
@@ -210,6 +225,7 @@ export async function sendDailyBrief(
   config: import("./config").BriefConfig
 ): Promise<{ sent: boolean; error?: string }> {
   const { sendEmail } = await import("@/lib/email");
+  const { generateDailyNarrative } = await import("./narrative");
   const { recipients, from, dashboardUrl } = config;
 
   if (recipients.length === 0) {
@@ -228,12 +244,18 @@ export async function sendDailyBrief(
       ? `▼${Math.abs(data.priorDay.changePct).toFixed(0)}%`
       : "flat";
 
-  const subject = `📊 [AICostCentral] Daily Brief — ${fmtShort(data.reportDate)} — $${data.yesterday.totalCostUSD.toFixed(2)} (${changeStr})`;
+  const criticalCount = alerts.filter((a) => a.severity === "critical").length;
+  const alertPrefix = criticalCount > 0 ? `🚨 ${criticalCount} CRITICAL · ` : alerts.length > 0 ? `⚠️ ${alerts.length} alert${alerts.length > 1 ? "s" : ""} · ` : "";
+
+  const subject = `${alertPrefix}📊 [AICostCentral] Daily Brief — ${fmtShort(data.reportDate)} — $${data.yesterday.totalCostUSD.toFixed(2)} (${changeStr})`;
+
+  // Generate AI narrative — runs in parallel with no blocking risk (falls back to "")
+  const narrative = await generateDailyNarrative(data, alerts);
 
   return sendEmail({
     to: recipients,
     from,
     subject,
-    html: renderDailyEmail(data, alerts, dashboardUrl),
+    html: renderDailyEmail(data, alerts, dashboardUrl, narrative),
   });
 }

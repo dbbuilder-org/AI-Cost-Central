@@ -77,6 +77,14 @@ function buildFallbackDetail(r: DetectionResult): string {
         : `API key "${r.subject}" (${r.provider}) used ${model} for the first time today.`;
     case "new_key":
       return `A new API key "${r.subject}" (${r.provider}) was detected. Total spend so far: $${r.value.toFixed(2)}.`;
+    case "key_velocity":
+      return `API key "${r.subject}" was created and used on the same calendar day — $${r.value.toFixed(2)} spent. This may indicate a stolen key being immediately exploited.`;
+    case "claude_code_on_app_key":
+      return `API key "${r.subject}" shows a Claude Code fingerprint (high cache_read vs uncached_input) on what should be app traffic. This pattern may indicate a stolen key being used interactively by an attacker.`;
+    case "key_rotation_spike":
+      return `${r.value} new API keys appeared in the last 48 hours for ${r.provider}. Rapid key creation is consistent with an active breach response or key farming.`;
+    case "render_service_anomaly":
+      return r.message;
   }
 }
 
@@ -113,6 +121,35 @@ function buildFallbackSteps(r: DetectionResult): string[] {
         `Confirm that "${r.subject}" was created intentionally by a member of your team.`,
         `If unexpected, rotate or revoke the key immediately and audit ${r.provider} admin access.`,
         `Tag the key with its project name in AICostCentral so future anomalies are easier to attribute.`,
+      ];
+    case "key_velocity":
+      return [
+        `Archive "${r.subject}" in the ${r.provider} console immediately if you did not authorize this usage.`,
+        `Check where this key was stored at time of creation — Render env vars, Vercel env vars, or local .env files.`,
+        `Review your deployment dashboard for any sessions you don't recognize (Render, Vercel, etc.).`,
+        `Rotate any platform credentials (Render API key, Vercel token) that may have exposed this key.`,
+      ];
+    case "claude_code_on_app_key":
+      return [
+        `Archive "${r.subject}" in the Anthropic console if you did not authorize interactive use of this key.`,
+        `Check the Anthropic console usage report for the source IP or workspace of these sessions.`,
+        `Review where this key is stored — Render, Vercel, and local .env files are common leak points.`,
+        `Rotate the key and any platform credentials that could expose it; enable KNOWN_GITHUB_OWNERS filtering.`,
+      ];
+    case "key_rotation_spike":
+      return [
+        `Review the ${r.provider} console key list — identify which keys are new and whether you created them.`,
+        `Cross-reference key creation timestamps against your activity — keys created outside business hours are suspicious.`,
+        `If any keys were created by an attacker, archive them and audit usage for the breach window.`,
+        `Consider adding BASELINE_START_DATE to exclude compromised-period data from anomaly baselines.`,
+      ];
+    case "render_service_anomaly":
+      return [
+        `Go to https://dashboard.render.com and find the flagged service immediately.`,
+        `Suspend the service if you don't recognize it — Suspend Service button is in the top-right.`,
+        `Review its Logs tab for outbound connections, API calls, and data exfiltration patterns.`,
+        `Check its Environment tab for any API keys or credentials set on the service.`,
+        `File a report with Render support if attacker-deployed; request billing credit for compute used.`,
       ];
   }
 }
@@ -216,14 +253,16 @@ export async function enrichWithAI(
 
     const userPrompt =
       `Analyze these ${topDetections.length} API key anomaly/anomalies detected on ${todayStr}.\n` +
-      `For each provide: "detail" (2-4 sentences — is this expected or unexpected? cite code evidence) ` +
-      `and "investigateSteps" (exactly 3 specific steps referencing file names and patterns when known).\n\n` +
+      `For each provide: "detail" (3-5 sentences — is this expected or unexpected? cite code evidence. ` +
+      `Assess whether this looks like legitimate usage, abuse, a broken integration, or normal variation. ` +
+      `Reference specific models, dollar amounts, and code patterns when available.) ` +
+      `and "investigateSteps" (exactly 3 specific, actionable steps referencing file names and patterns when known).\n\n` +
       anomalyBlocks.join("\n\n") +
       `\n\nRespond with JSON array: [{"index": 0, "detail": "...", "investigateSteps": ["step1","step2","step3"]}, ...]`;
 
     const res = await client.messages.create({
-      model: "claude-haiku-4-5-20251001",
-      max_tokens: 2000,
+      model: "claude-sonnet-4-6",
+      max_tokens: 3000,
       temperature: 0,
       system: SYSTEM_PROMPT,
       messages: [{ role: "user", content: userPrompt }],

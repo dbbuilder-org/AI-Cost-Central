@@ -7,6 +7,7 @@ interface OAIUsageBucket {
 
 interface OAIUsageResult {
   input_tokens?: number;
+  input_cached_tokens?: number;
   output_tokens?: number;
   num_model_requests: number;
   api_key_id: string | null;
@@ -34,8 +35,71 @@ function tsToDate(ts: number): string {
   return new Date(ts * 1000).toISOString().slice(0, 10);
 }
 
+/**
+ * Approximate per-token pricing ($ per 1M tokens) used to weight cost distribution.
+ * Exact values don't matter — ratios matter. The OpenAI costs API provides the true
+ * daily total; we use these weights only to split that total across keys/models.
+ *
+ * Prefixes are matched longest-first so e.g. "gpt-4o-mini" beats "gpt-4o".
+ */
+const MODEL_PRICE_WEIGHTS: Array<{ prefix: string; input: number; output: number }> = [
+  // GPT-5 family (2026)
+  { prefix: "gpt-5.5",          input: 30,   output: 60   },
+  { prefix: "gpt-5.4-mini",     input: 2,    output: 8    },
+  { prefix: "gpt-5.4",          input: 20,   output: 50   },
+  { prefix: "gpt-5.3-codex",    input: 15,   output: 40   },
+  { prefix: "gpt-5.3",          input: 15,   output: 40   },
+  { prefix: "gpt-5-nano",       input: 0.5,  output: 2    },
+  { prefix: "gpt-5",            input: 20,   output: 50   },
+  // o-series
+  { prefix: "o4-mini",          input: 1.10, output: 4.40 },
+  { prefix: "o3-mini",          input: 1.10, output: 4.40 },
+  { prefix: "o3",               input: 10,   output: 40   },
+  { prefix: "o1-mini",          input: 3,    output: 12   },
+  { prefix: "o1",               input: 15,   output: 60   },
+  // GPT-4.1 family (2025)
+  { prefix: "gpt-4.1-nano",     input: 0.10, output: 0.40 },
+  { prefix: "gpt-4.1-mini",     input: 0.40, output: 1.60 },
+  { prefix: "gpt-4.1",          input: 2,    output: 8    },
+  // GPT-4o family
+  { prefix: "gpt-4o-mini",      input: 0.15, output: 0.60 },
+  { prefix: "gpt-4o",           input: 2.50, output: 10   },
+  // GPT-4 / GPT-3.5
+  { prefix: "gpt-4-turbo",      input: 10,   output: 30   },
+  { prefix: "gpt-4",            input: 30,   output: 60   },
+  { prefix: "gpt-3.5-turbo",    input: 0.50, output: 1.50 },
+  // Embeddings / misc
+  { prefix: "text-embedding",   input: 0.10, output: 0    },
+  { prefix: "whisper",          input: 0,    output: 0    },
+  { prefix: "tts",              input: 0,    output: 0    },
+  { prefix: "dall-e",           input: 0,    output: 0    },
+];
+const MODEL_PRICE_FALLBACK = { input: 5, output: 15 };
+
+function modelPriceWeight(model: string): number {
+  const lower = model.toLowerCase();
+  // Match longest prefix first (array is ordered longest-to-shortest within families)
+  for (const entry of MODEL_PRICE_WEIGHTS) {
+    if (lower.startsWith(entry.prefix.toLowerCase())) {
+      return entry.input + entry.output;
+    }
+  }
+  return MODEL_PRICE_FALLBACK.input + MODEL_PRICE_FALLBACK.output;
+}
+
+/**
+ * Compute a token-weighted cost estimate for a usage row.
+ * Used as the weight for distributing the actual OpenAI daily cost total.
+ * Cached input tokens are discounted (50%) since OpenAI charges less for them.
+ */
+function estimatedCostWeight(row: UsageRow & { inputWeight: number }): number {
+  const pricePerM = modelPriceWeight(row.model);
+  // Output tokens are ~4x more expensive per token than input on most models
+  return (row.inputWeight * (pricePerM * 0.25) + row.outputTokens * (pricePerM * 0.75)) / 1_000_000;
+}
+
 export function transformOpenAI(raw: OAIRawData): UsageRow[] {
-  // Build cost-by-day (org-level total; we distribute proportionally by requests)
+  // Build cost-by-day from the OpenAI costs API (org-level actuals)
   const costByDay: Record<string, number> = {};
   for (const bucket of raw.costBuckets) {
     const date = tsToDate(bucket.start_time);
@@ -45,12 +109,16 @@ export function transformOpenAI(raw: OAIRawData): UsageRow[] {
     }
   }
 
-  // Aggregate usage — now grouped by model + api_key_id from the API
-  const rowMap = new Map<string, UsageRow>();
+  // Aggregate usage rows — grouped by model + api_key_id
+  const rowMap = new Map<string, UsageRow & { cachedInputTokens: number; inputWeight: number }>();
 
   const processBucket = (bucket: OAIUsageBucket) => {
     const date = tsToDate(bucket.start_time);
     for (const r of bucket.results) {
+      // Skip zero-token rows — these are rejected/rate-limited requests that
+      // never consumed tokens (quota exhausted, auth failure, etc.)
+      if ((r.input_tokens ?? 0) === 0 && (r.output_tokens ?? 0) === 0) continue;
+
       const keyId = r.api_key_id ?? "org";
       const model = r.model ?? "unknown";
       const mapKey = `${keyId}|${model}|${date}`;
@@ -67,11 +135,18 @@ export function transformOpenAI(raw: OAIRawData): UsageRow[] {
         costUSD: 0,
         costPer1KInput: 0,
         costPer1KOutput: 0,
+        cachedInputTokens: 0,
+        inputWeight: 0,
       };
 
-      existing.inputTokens += r.input_tokens ?? 0;
+      const inputTok = r.input_tokens ?? 0;
+      const cachedTok = r.input_cached_tokens ?? 0;
+      existing.inputTokens += inputTok;
       existing.outputTokens += r.output_tokens ?? 0;
       existing.requests += r.num_model_requests;
+      existing.cachedInputTokens += cachedTok;
+      // Cached tokens are 50% price — weight uncached full + cached half
+      existing.inputWeight += (inputTok - cachedTok) + cachedTok * 0.5;
       rowMap.set(mapKey, existing);
     }
   };
@@ -79,17 +154,25 @@ export function transformOpenAI(raw: OAIRawData): UsageRow[] {
   for (const b of raw.completionBuckets) processBucket(b);
   for (const b of raw.embeddingBuckets) processBucket(b);
 
-  // Distribute daily cost proportionally by request count across all rows that day
-  const byDate: Record<string, UsageRow[]> = {};
+  // Distribute daily cost proportionally by token-weighted model cost estimate.
+  // This correctly attributes expensive GPT-5 requests vs cheap gpt-4o-mini requests
+  // instead of treating every request as equal value.
+  const byDate: Record<string, Array<UsageRow & { cachedInputTokens: number; inputWeight: number }>> = {};
   for (const row of rowMap.values()) {
     (byDate[row.date] ??= []).push(row);
   }
 
   for (const [date, dateRows] of Object.entries(byDate)) {
-    const totalReqs = dateRows.reduce((s, r) => s + r.requests, 0);
     const dayCost = costByDay[date] ?? 0;
+    const totalWeight = dateRows.reduce((s, r) => s + estimatedCostWeight(r), 0);
     for (const row of dateRows) {
-      row.costUSD = totalReqs > 0 ? dayCost * (row.requests / totalReqs) : 0;
+      const rowWeight = estimatedCostWeight(row);
+      // Fall back to request-count distribution only if all rows have zero token weight
+      row.costUSD = totalWeight > 0
+        ? dayCost * (rowWeight / totalWeight)
+        : dateRows.reduce((s, r) => s + r.requests, 0) > 0
+          ? dayCost * (row.requests / dateRows.reduce((s, r) => s + r.requests, 0))
+          : 0;
       row.costPer1KInput = row.inputTokens > 0 ? (row.costUSD / row.inputTokens) * 1000 : 0;
       row.costPer1KOutput = row.outputTokens > 0 ? (row.costUSD / row.outputTokens) * 1000 : 0;
     }

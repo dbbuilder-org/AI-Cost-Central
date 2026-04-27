@@ -47,6 +47,18 @@ function buildFallbackAlert(result: DetectionResult, date: string): Alert {
     case "new_key":
       detail = `New API key "${result.subject}" (${result.provider}) detected. Spend so far: $${result.value.toFixed(2)}.`;
       break;
+    case "key_velocity":
+      detail = `API key "${result.subject}" was created and used on the same calendar day — $${result.value.toFixed(2)} spent${model !== "unknown model" ? ` via ${model}` : ""}. This may indicate an attacker read the key from your deployment dashboard shortly after it was set.`;
+      break;
+    case "claude_code_on_app_key":
+      detail = `API key "${result.subject}" shows a Claude Code fingerprint (high cache_read vs uncached_input ratio) but is not expected to run interactive sessions. This can indicate a stolen key being used by an attacker running Claude Code.`;
+      break;
+    case "key_rotation_spike":
+      detail = `${result.value} new ${result.provider} API keys appeared in the last 48 hours. Rapid key creation may indicate an active breach response or key farming. Review the provider console immediately.`;
+      break;
+    case "render_service_anomaly":
+      detail = result.message;
+      break;
   }
   return {
     ...result,

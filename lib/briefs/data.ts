@@ -20,12 +20,20 @@ export interface ModelSpend {
   costPerRequest: number;
 }
 
+export interface KeyModelBreakdown {
+  model: string;
+  costUSD: number;
+  pct: number;
+}
+
 export interface KeySpend {
   apiKeyId: string;
   apiKeyName: string;
   provider: string;
   costUSD: number;
   requests: number;
+  /** Top 3 models this key used (by cost), with their share of the key's total */
+  topModels: KeyModelBreakdown[];
 }
 
 export interface DaySpend {
@@ -121,21 +129,30 @@ export function computeDailyData(rows: UsageRow[]): DailyBriefData {
     .sort((a, b) => b.costUSD - a.costUSD)
     .slice(0, 8);
 
-  // Top keys
-  const keyMap = new Map<string, { cost: number; reqs: number; name: string; provider: string }>();
+  // Top keys (with per-key model breakdown)
+  const keyMap = new Map<string, { cost: number; reqs: number; name: string; provider: string; modelCosts: Map<string, number> }>();
   for (const r of yesterdayRows) {
-    const e = keyMap.get(r.apiKeyId) ?? { cost: 0, reqs: 0, name: r.apiKeyName, provider: r.provider };
+    const e = keyMap.get(r.apiKeyId) ?? { cost: 0, reqs: 0, name: r.apiKeyName, provider: r.provider, modelCosts: new Map() };
     e.cost += r.costUSD;
     e.reqs += r.requests;
+    e.modelCosts.set(r.model, (e.modelCosts.get(r.model) ?? 0) + r.costUSD);
     keyMap.set(r.apiKeyId, e);
   }
   const topKeys: KeySpend[] = [...keyMap.entries()]
-    .map(([id, { cost, reqs, name, provider }]) => ({
+    .map(([id, { cost, reqs, name, provider, modelCosts }]) => ({
       apiKeyId: id,
       apiKeyName: name,
       provider,
       costUSD: cost,
       requests: reqs,
+      topModels: [...modelCosts.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 3)
+        .map(([model, modelCost]) => ({
+          model,
+          costUSD: modelCost,
+          pct: cost > 0 ? (modelCost / cost) * 100 : 0,
+        })),
     }))
     .sort((a, b) => b.costUSD - a.costUSD)
     .slice(0, 5);
@@ -265,21 +282,30 @@ export function computeWeeklyData(rows: UsageRow[]): WeeklyBriefData {
     .sort((a, b) => b.costUSD - a.costUSD)
     .slice(0, 10);
 
-  // Top keys
-  const keyMap = new Map<string, { cost: number; reqs: number; name: string; provider: string }>();
+  // Top keys (with per-key model breakdown)
+  const keyMap = new Map<string, { cost: number; reqs: number; name: string; provider: string; modelCosts: Map<string, number> }>();
   for (const r of thisWeekRows) {
-    const e = keyMap.get(r.apiKeyId) ?? { cost: 0, reqs: 0, name: r.apiKeyName, provider: r.provider };
+    const e = keyMap.get(r.apiKeyId) ?? { cost: 0, reqs: 0, name: r.apiKeyName, provider: r.provider, modelCosts: new Map() };
     e.cost += r.costUSD;
     e.reqs += r.requests;
+    e.modelCosts.set(r.model, (e.modelCosts.get(r.model) ?? 0) + r.costUSD);
     keyMap.set(r.apiKeyId, e);
   }
   const topKeys: KeySpend[] = [...keyMap.entries()]
-    .map(([id, { cost, reqs, name, provider }]) => ({
+    .map(([id, { cost, reqs, name, provider, modelCosts }]) => ({
       apiKeyId: id,
       apiKeyName: name,
       provider,
       costUSD: cost,
       requests: reqs,
+      topModels: [...modelCosts.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 3)
+        .map(([model, modelCost]) => ({
+          model,
+          costUSD: modelCost,
+          pct: cost > 0 ? (modelCost / cost) * 100 : 0,
+        })),
     }))
     .sort((a, b) => b.costUSD - a.costUSD)
     .slice(0, 5);

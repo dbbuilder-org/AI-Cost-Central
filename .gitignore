@@ -50,3 +50,4 @@ next-env.d.ts
 /mobile/.expo
 /mobile/dist
 /keys/
+.env*.local

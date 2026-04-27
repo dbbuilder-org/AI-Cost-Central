@@ -17,6 +17,7 @@ import { assignExperiment } from "@/lib/router/experiment";
 import { getLatencyStats } from "@/lib/router/latency";
 import { normalizeModelName } from "@/lib/router/normalize";
 import { pickKey } from "@/lib/router/keyPool";
+import { checkAccessPolicy } from "@/lib/router/accessPolicy";
 import { db, schema } from "@/lib/db";
 import { eq, and } from "drizzle-orm";
 import { randomUUID } from "crypto";
@@ -203,6 +204,25 @@ export async function POST(req: NextRequest) {
     }, { status: 429 });
   }
 
+  // ── Access policy (IP / origin / model allowlists) ──
+  if (!ctx.passthrough) {
+    const violation = checkAccessPolicy({
+      clientIp: req.headers.get("x-forwarded-for") ?? req.headers.get("x-real-ip"),
+      origin: req.headers.get("origin") ?? req.headers.get("referer"),
+      modelRequested: rawModel,
+      config: projectConfig,
+    });
+    if (violation) {
+      return NextResponse.json({
+        error: {
+          message: violation.message,
+          type: "invalid_request_error",
+          code: `access_denied_${violation.dimension}`,
+        },
+      }, { status: 403 });
+    }
+  }
+
   // ── Task Classification ──
   const classification = classifyRequest({
     model: modelRequested,
@@ -309,6 +329,25 @@ export async function POST(req: NextRequest) {
   const latencyMs = Date.now() - startMs;
 
   if (isStream) {
+    // Reject error responses before setting up the stream — same as non-streaming path.
+    // Without this check, 429/402/401 bodies pipe through the transform, flush() fires
+    // with success=true, and estimated tokens get logged as real usage.
+    if (!providerResponse.ok) {
+      const errBody = await providerResponse.json().catch(() => ({}));
+      await logRequest({
+        orgId: ctx.orgId, projectId: ctx.projectId,
+        modelRequested, modelUsed: finalModel, providerUsed: finalProvider,
+        taskType: classification.taskType,
+        inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, costUSD: 0, savingsUSD: 0,
+        latencyMs: Date.now() - startMs, success: false,
+        errorCode: String((errBody as { error?: { code?: unknown } })?.error?.code ?? providerResponse.status),
+        callsite, fallbackCount,
+        experimentId: experimentAssignment?.experimentId,
+        experimentVariant: experimentAssignment?.variant,
+      });
+      return NextResponse.json(errBody, { status: providerResponse.status });
+    }
+
     if (!providerResponse.body) {
       return NextResponse.json({ error: { message: "Empty stream body", type: "api_error" } }, { status: 502 });
     }
@@ -332,8 +371,12 @@ export async function POST(req: NextRequest) {
     });
 
     const decoder = new TextDecoder();
-    let usageInputTokens = classification.estimatedInputTokens;
-    let usageOutputTokens = classification.estimatedOutputTokens;
+    // Start at 0 — only update from actual stream usage chunks.
+    // Previously initialised to estimated values, which caused failed/empty
+    // streams to log phantom token usage.
+    let usageInputTokens = 0;
+    let usageOutputTokens = 0;
+    let gotActualUsage = false;
 
     const transformStream = new TransformStream({
       transform(chunk, controller) {
@@ -345,12 +388,22 @@ export async function POST(req: NextRequest) {
           if (payload === "[DONE]") continue;
           try {
             const parsed = JSON.parse(payload) as { usage?: { prompt_tokens?: number; completion_tokens?: number } };
-            if (parsed.usage?.prompt_tokens) usageInputTokens = parsed.usage.prompt_tokens;
-            if (parsed.usage?.completion_tokens) usageOutputTokens = parsed.usage.completion_tokens;
+            if (parsed.usage?.prompt_tokens != null) {
+              usageInputTokens = parsed.usage.prompt_tokens;
+              gotActualUsage = true;
+            }
+            if (parsed.usage?.completion_tokens != null) {
+              usageOutputTokens = parsed.usage.completion_tokens;
+              gotActualUsage = true;
+            }
           } catch { /* non-JSON chunk — ignore */ }
         }
       },
       flush() {
+        // Only log if we received real usage data from the provider.
+        // If gotActualUsage is false the stream produced no tokens (error body,
+        // empty response, or pre-token rejection) — don't inflate usage counts.
+        if (!gotActualUsage) return;
         const costUSD = estimateCost(finalModel, usageInputTokens, usageOutputTokens);
         logRequest({
           orgId: ctx.orgId, projectId: ctx.projectId,

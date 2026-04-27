@@ -8,6 +8,13 @@
       "when": 1776291779214,
       "tag": "0000_add_request_logs",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1777275603729,
+      "tag": "0001_nasty_purple_man",
+      "breakpoints": true
     }
   ]
 }

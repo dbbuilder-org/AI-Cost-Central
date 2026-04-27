@@ -355,6 +355,10 @@ export interface ProjectRoutingConfig {
   customEndpointUrl?: string;                            // self-hosted Ollama/vLLM/Azure endpoint
   customEndpointApiKey?: string;                         // bearer key for custom endpoint (stored encrypted)
   openrouterReferer?: string;                            // HTTP-Referer passed to OpenRouter-compat endpoints
+  // Access policy — inbound restrictions on who may call this project's virtual key
+  allowedIps?: string[];                                 // CIDR notation; null/empty = unrestricted
+  allowedOrigins?: string[];                             // Origin/Referer prefix match; null/empty = unrestricted
+  allowedModels?: string[];                              // exact model IDs permitted; null/empty = all models
 }
 
 // ── Model Pricing (live, updated by cron every 6h) ───────────────────────────
@@ -398,6 +402,31 @@ export const orgWebhooks = pgTable("org_webhooks", {
   index("org_webhooks_org_idx").on(t.orgId),
 ]);
 
+// ── Render Service Inventory ──────────────────────────────────────────────────
+// One row per Render service observed in the workspace. New services from
+// unknown GitHub repos trigger a render_service_anomaly alert.
+// Services are marked isKnown=true once reviewed and confirmed legitimate.
+
+export const renderServices = pgTable("render_services", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  serviceId: text("service_id").notNull(),               // Render's srv-xxx ID
+  name: text("name").notNull(),
+  serviceType: text("service_type").notNull(),           // web_service|worker|cron_job|static_site
+  repoOwner: text("repo_owner"),                         // GitHub org/user
+  repoName: text("repo_name"),                           // GitHub repo name
+  branch: text("branch"),
+  url: text("url"),                                      // onrender.com URL
+  status: text("status").notNull().default("active"),    // active|suspended|deleted
+  isKnown: boolean("is_known").notNull().default(false), // true = manually confirmed legitimate
+  suspiciousReason: text("suspicious_reason"),           // why it was flagged
+  firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).notNull().defaultNow(),
+  lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("render_services_service_id_idx").on(t.serviceId),
+  index("render_services_known_idx").on(t.isKnown),
+]);
+
 // ── Type exports ──────────────────────────────────────────────────────────────
 
 export type Organization = typeof organizations.$inferSelect;
@@ -419,3 +448,5 @@ export type RoutingExperiment = typeof routingExperiments.$inferSelect;
 export type NewRoutingExperiment = typeof routingExperiments.$inferInsert;
 export type DeviceToken = typeof deviceTokens.$inferSelect;
 export type NewDeviceToken = typeof deviceTokens.$inferInsert;
+export type RenderService = typeof renderServices.$inferSelect;
+export type NewRenderService = typeof renderServices.$inferInsert;
