@@ -25,7 +25,7 @@ export const maxDuration = 60;
 const ANTHROPIC_API = "https://api.anthropic.com/v1/messages";
 const DEFAULT_ANTHROPIC_VERSION = "2023-06-01";
 
-// Headers we never forward upstream
+// Headers we never forward (upstream request or downstream response)
 const STRIP_HEADERS = new Set([
   "host",
   "x-forwarded-for",
@@ -36,6 +36,9 @@ const STRIP_HEADERS = new Set([
   "content-length",
   "connection",
   "transfer-encoding",
+  // content-encoding must be stripped from the response: upstream.text() already
+  // decompresses the body; forwarding "gzip" would cause the client to double-decompress
+  "content-encoding",
 ]);
 
 function logRequest(data: {
