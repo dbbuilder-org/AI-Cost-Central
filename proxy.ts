@@ -11,6 +11,7 @@ const isPublicRoute = createRouteMatcher([
   "/api/cron/(.*)",             // Cron jobs (validated by x-cron-secret header in each handler)
   "/api/internal/(.*)",         // Internal server-to-server webhooks (validated by x-internal-secret)
   "/api/health",                // Health check
+  "/v1/(.*)",                   // SmartRouter proxy endpoints (authenticated by virtual key in handler)
 ]);
 
 export default clerkMiddleware(async (auth, request) => {
