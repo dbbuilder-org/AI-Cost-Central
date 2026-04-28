@@ -4,6 +4,9 @@ import {
   detectVolumeSpikes,
   detectKeyModelShift,
   detectNewKeys,
+  detectKeyVelocity,
+  detectClaudeCodeOnAppKey,
+  detectKeyRotationSpike,
   detectAll,
 } from "@/lib/alerts/detector";
 import type { UsageRow } from "@/types";
@@ -426,5 +429,202 @@ describe("detectAll", () => {
       expect(alert.subject).toBe("My Key");
       expect(alert.subject).not.toBe("gpt-4o");
     }
+  });
+});
+
+// ── detectKeyVelocity ──────────────────────────────────────────────────────
+
+describe("detectKeyVelocity", () => {
+  function velocityRow(overrides: Partial<UsageRow> = {}): UsageRow {
+    return makeRow({
+      provider: "anthropic",
+      apiKeyId: "key_new",
+      apiKeyName: "New Key",
+      model: "claude-opus-4-6",
+      date: "2026-04-13",
+      costUSD: 3.0,
+      providerKeyCreatedAt: "2026-04-13",
+      ...overrides,
+    });
+  }
+
+  it("fires when key was created and used on the same day above min cost", () => {
+    const rows = [velocityRow()];
+    const alerts = detectKeyVelocity(rows);
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].type).toBe("key_velocity");
+    expect(alerts[0].subject).toBe("New Key");
+  });
+
+  it("does not fire when first usage date differs from creation date", () => {
+    const rows = [velocityRow({ providerKeyCreatedAt: "2026-04-10" })];
+    const alerts = detectKeyVelocity(rows);
+    expect(alerts).toHaveLength(0);
+  });
+
+  it("does not fire when same-day cost is below keyVelocityMinCost", () => {
+    const rows = [velocityRow({ costUSD: 0.001 })];
+    const config = { ...DEFAULT_CONFIG, keyVelocityMinCost: 1.0 };
+    const alerts = detectKeyVelocity(rows, config);
+    expect(alerts).toHaveLength(0);
+  });
+
+  it("does not fire when no providerKeyCreatedAt is present", () => {
+    const rows = [makeRow({ costUSD: 5.0 })]; // no providerKeyCreatedAt
+    const alerts = detectKeyVelocity(rows);
+    expect(alerts).toHaveLength(0);
+  });
+
+  it("escalates to critical when Claude Code fingerprint is also detected", () => {
+    const row = velocityRow({
+      costUSD: 3.0,
+      cacheReadTokens: 2_000_000,
+      uncachedInputTokens: 100,
+    });
+    const alerts = detectKeyVelocity([row]);
+    expect(alerts[0].severity).toBe("critical");
+  });
+
+  it("is warning severity without Claude Code fingerprint and low cost", () => {
+    const row = velocityRow({
+      costUSD: 1.5,
+      cacheReadTokens: 0,
+      uncachedInputTokens: 50_000,
+    });
+    const alerts = detectKeyVelocity([row]);
+    expect(alerts[0].severity).toBe("warning");
+  });
+});
+
+// ── detectClaudeCodeOnAppKey ───────────────────────────────────────────────
+
+describe("detectClaudeCodeOnAppKey", () => {
+  function ccRow(date: string, cacheRead: number, uncached: number, costUSD = 5.0): UsageRow {
+    return makeRow({
+      provider: "anthropic",
+      apiKeyId: "key_cc",
+      apiKeyName: "App Key",
+      model: "claude-opus-4-6",
+      date,
+      cacheReadTokens: cacheRead,
+      uncachedInputTokens: uncached,
+      costUSD,
+    });
+  }
+
+  it("fires when today shows high cache_read:uncached ratio above thresholds", () => {
+    const rows = [ccRow("2026-04-13", 1_500_000, 100)];
+    const config = { ...DEFAULT_CONFIG, claudeCodeMinCacheTokens: 1_000_000, claudeCodeCacheRatio: 5 };
+    const alerts = detectClaudeCodeOnAppKey(rows, config);
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].type).toBe("claude_code_on_app_key");
+  });
+
+  it("does not fire when cache_read is below minimum threshold", () => {
+    const rows = [ccRow("2026-04-13", 500_000, 100)];
+    const config = { ...DEFAULT_CONFIG, claudeCodeMinCacheTokens: 1_000_000, claudeCodeCacheRatio: 5 };
+    const alerts = detectClaudeCodeOnAppKey(rows, config);
+    expect(alerts).toHaveLength(0);
+  });
+
+  it("does not fire when ratio is below claudeCodeCacheRatio", () => {
+    // cache_read = 1.5M, uncached = 500K → ratio = 3 (below 5)
+    const rows = [ccRow("2026-04-13", 1_500_000, 500_000)];
+    const config = { ...DEFAULT_CONFIG, claudeCodeMinCacheTokens: 1_000_000, claudeCodeCacheRatio: 5 };
+    const alerts = detectClaudeCodeOnAppKey(rows, config);
+    expect(alerts).toHaveLength(0);
+  });
+
+  it("does not fire when baseline showed same pattern (expected behavior)", () => {
+    // Multiple baseline days all showing high cache_read
+    const baselineDays = Array.from({ length: 7 }, (_, i) =>
+      ccRow(`2026-04-${String(6 + i).padStart(2, "0")}`, 1_500_000, 100)
+    );
+    const todayRow = ccRow("2026-04-13", 1_500_000, 100);
+    const config = { ...DEFAULT_CONFIG, claudeCodeMinCacheTokens: 1_000_000, claudeCodeCacheRatio: 5 };
+    const alerts = detectClaudeCodeOnAppKey([...baselineDays, todayRow], config);
+    expect(alerts).toHaveLength(0);
+  });
+
+  it("ignores non-Anthropic providers", () => {
+    const row = makeRow({
+      provider: "openai",
+      date: "2026-04-13",
+      cacheReadTokens: 2_000_000,
+      uncachedInputTokens: 50,
+      costUSD: 5.0,
+    });
+    const alerts = detectClaudeCodeOnAppKey([row]);
+    expect(alerts).toHaveLength(0);
+  });
+});
+
+// ── detectKeyRotationSpike ─────────────────────────────────────────────────
+
+describe("detectKeyRotationSpike", () => {
+  function rotRow(keyId: string, createdAt: string, date = "2026-04-13"): UsageRow {
+    return makeRow({
+      provider: "anthropic",
+      apiKeyId: keyId,
+      apiKeyName: `Key ${keyId}`,
+      date,
+      providerKeyCreatedAt: createdAt,
+      costUSD: 0.5,
+    });
+  }
+
+  it("fires when 3+ distinct keys were created in last 48h", () => {
+    const rows = [
+      rotRow("k1", "2026-04-12"),
+      rotRow("k2", "2026-04-12"),
+      rotRow("k3", "2026-04-13"),
+    ];
+    const config = { ...DEFAULT_CONFIG, keyRotationSpikeThreshold: 3 };
+    const alerts = detectKeyRotationSpike(rows, config);
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].type).toBe("key_rotation_spike");
+    expect(alerts[0].value).toBe(3);
+  });
+
+  it("does not fire when fewer than threshold new keys", () => {
+    const rows = [rotRow("k1", "2026-04-12"), rotRow("k2", "2026-04-13")];
+    const config = { ...DEFAULT_CONFIG, keyRotationSpikeThreshold: 3 };
+    const alerts = detectKeyRotationSpike(rows, config);
+    expect(alerts).toHaveLength(0);
+  });
+
+  it("does not count keys created more than 48h ago", () => {
+    // "today" in the dataset is 2026-04-13; cutoff is 2026-04-12
+    // Keys created 2026-04-10 are outside the window
+    const rows = [
+      rotRow("k1", "2026-04-10"),
+      rotRow("k2", "2026-04-10"),
+      rotRow("k3", "2026-04-10"),
+    ];
+    const config = { ...DEFAULT_CONFIG, keyRotationSpikeThreshold: 3 };
+    const alerts = detectKeyRotationSpike(rows, config);
+    expect(alerts).toHaveLength(0);
+  });
+
+  it("fires separately per provider when each has enough new keys", () => {
+    const rows = [
+      rotRow("ant1", "2026-04-13"),
+      rotRow("ant2", "2026-04-13"),
+      rotRow("ant3", "2026-04-13"),
+      makeRow({ provider: "openai", apiKeyId: "oai1", date: "2026-04-13", providerKeyCreatedAt: "2026-04-13" }),
+      makeRow({ provider: "openai", apiKeyId: "oai2", date: "2026-04-13", providerKeyCreatedAt: "2026-04-13" }),
+      makeRow({ provider: "openai", apiKeyId: "oai3", date: "2026-04-13", providerKeyCreatedAt: "2026-04-13" }),
+    ];
+    const config = { ...DEFAULT_CONFIG, keyRotationSpikeThreshold: 3 };
+    const alerts = detectKeyRotationSpike(rows, config);
+    expect(alerts).toHaveLength(2);
+    const providers = alerts.map((a) => a.provider).sort();
+    expect(providers).toEqual(["anthropic", "openai"]);
+  });
+
+  it("returns empty array for rows with no providerKeyCreatedAt", () => {
+    const rows = [makeRow(), makeRow({ apiKeyId: "k2" })];
+    const alerts = detectKeyRotationSpike(rows);
+    expect(alerts).toHaveLength(0);
   });
 });

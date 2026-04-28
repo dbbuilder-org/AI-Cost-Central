@@ -608,6 +608,11 @@ export function detectHourlyVelocity(
   const todayDate = allDates[allDates.length - 1];
   const baselineDates = allDates.slice(0, -1);
 
+  // Only project when the data's "today" is actually today — historical data
+  // would produce false velocity alerts (tiny early-hour values look huge when projected).
+  const realToday = new Date().toISOString().slice(0, 10);
+  if (todayDate !== realToday) return results;
+
   // How far into the current UTC day are we? (0.0 – 1.0)
   const nowHour = new Date().getUTCHours();
   const dayFraction = Math.max((nowHour + 1) / 24, 1 / 24); // at least 1/24 to avoid div/0
