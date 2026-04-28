@@ -305,7 +305,13 @@ export async function POST(req: NextRequest) {
       }),
   ).then((arr) => arr.filter((a): a is FallbackAttempt => a !== null));
 
-  const forwardBody = { ...body, model: modelToUse, messages: cachedMessages };
+  // Inject stream_options for OpenAI-compatible providers that support it.
+  // This causes the provider to include a usage chunk in the SSE stream so we
+  // get accurate token counts instead of estimates.
+  const streamOptions = isStream && (providerToUse === "openai" || providerToUse === "groq")
+    ? { stream_options: { include_usage: true } }
+    : {};
+  const forwardBody = { ...body, model: modelToUse, messages: cachedMessages, ...streamOptions };
 
   // ── Forward with fallback ──
   let fallbackResult: Awaited<ReturnType<typeof forwardWithFallback>>;
@@ -400,10 +406,13 @@ export async function POST(req: NextRequest) {
         }
       },
       flush() {
-        // Only log if we received real usage data from the provider.
-        // If gotActualUsage is false the stream produced no tokens (error body,
-        // empty response, or pre-token rejection) — don't inflate usage counts.
-        if (!gotActualUsage) return;
+        // Providers that support stream_options.include_usage (openai, groq) send
+        // a usage chunk — use exact counts. Other providers (anthropic openai-compat,
+        // google, mistral) don't, so fall back to classifier estimates.
+        if (!gotActualUsage) {
+          usageInputTokens = classification.estimatedInputTokens;
+          usageOutputTokens = classification.estimatedOutputTokens;
+        }
         const costUSD = estimateCost(finalModel, usageInputTokens, usageOutputTokens);
         logRequest({
           orgId: ctx.orgId, projectId: ctx.projectId,

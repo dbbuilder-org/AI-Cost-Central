@@ -187,6 +187,11 @@ function ExperimentRow({
   );
 }
 
+const TASK_TYPE_OPTIONS = [
+  "chat", "coding", "reasoning", "extraction",
+  "summarization", "classification", "generation",
+] as const;
+
 interface CreateForm {
   projectId: string;
   name: string;
@@ -194,6 +199,7 @@ interface CreateForm {
   controlModel: string;
   treatmentModel: string;
   splitPct: number;
+  taskTypes: string[];
 }
 
 const BLANK_FORM: CreateForm = {
@@ -203,6 +209,7 @@ const BLANK_FORM: CreateForm = {
   controlModel: "",
   treatmentModel: "",
   splitPct: 50,
+  taskTypes: [],
 };
 
 export function ABExperimentsCard() {
@@ -260,6 +267,7 @@ export function ABExperimentsCard() {
         body: JSON.stringify({
           ...form,
           splitPct: Number(form.splitPct),
+          taskTypes: form.taskTypes,
         }),
       });
       const data = await res.json() as { error?: string };
@@ -388,6 +396,38 @@ export function ABExperimentsCard() {
                   onChange={(e) => setForm((f) => ({ ...f, splitPct: parseInt(e.target.value, 10) || 50 }))}
                   className="w-full mt-0.5 bg-white border border-slate-300 rounded px-2 py-1 text-xs text-slate-800 focus:outline-none focus:ring-1 focus:ring-indigo-400"
                 />
+              </div>
+            </div>
+            <div>
+              <label className="text-xs text-slate-600">
+                Task types{" "}
+                <span className="text-slate-400">(leave blank to apply to all)</span>
+              </label>
+              <div className="mt-1 flex flex-wrap gap-1.5">
+                {TASK_TYPE_OPTIONS.map((t) => {
+                  const checked = form.taskTypes.includes(t);
+                  return (
+                    <button
+                      key={t}
+                      type="button"
+                      onClick={() =>
+                        setForm((f) => ({
+                          ...f,
+                          taskTypes: checked
+                            ? f.taskTypes.filter((x) => x !== t)
+                            : [...f.taskTypes, t],
+                        }))
+                      }
+                      className={`text-xs px-2 py-0.5 rounded-full border transition-colors ${
+                        checked
+                          ? "bg-indigo-600 text-white border-indigo-600"
+                          : "bg-white text-slate-600 border-slate-300 hover:border-indigo-400"
+                      }`}
+                    >
+                      {t}
+                    </button>
+                  );
+                })}
               </div>
             </div>
             {createError && <p className="text-xs text-red-600">{createError}</p>}
