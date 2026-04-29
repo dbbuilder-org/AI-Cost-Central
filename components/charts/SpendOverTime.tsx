@@ -3,11 +3,7 @@ import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
 } from "recharts";
 import type { DaySummary } from "@/types";
-
-const MODEL_COLORS = [
-  "#6366f1", "#f59e0b", "#10b981", "#ef4444", "#8b5cf6",
-  "#06b6d4", "#f97316", "#84cc16", "#ec4899", "#14b8a6",
-];
+import { getModelColor, getProvider, abbreviateModel, PROVIDER_LOGO_CONFIG } from "@/lib/modelDisplay";
 
 interface Props {
   byDay: DaySummary[];
@@ -41,7 +37,8 @@ function CustomTooltip({ active, label, payload }: CustomTooltipProps) {
           <div key={p.name} className="flex items-center justify-between gap-4 py-0.5">
             <div className="flex items-center gap-1.5 min-w-0">
               <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: p.color }} />
-              <span className="text-gray-300 truncate max-w-[140px]">{p.name}</span>
+              {/* Tooltip shows the full model ID */}
+              <span className="text-gray-300 truncate max-w-[160px]">{p.name}</span>
             </div>
             <span className="text-white font-semibold tabular-nums">
               ${p.value >= 0.01 ? p.value.toFixed(2) : p.value.toFixed(4)}
@@ -56,6 +53,62 @@ function CustomTooltip({ active, label, payload }: CustomTooltipProps) {
           </span>
         </div>
       )}
+    </div>
+  );
+}
+
+// Provider logo as a small SVG badge (14×14px)
+function ProviderBadge({ modelId }: { modelId: string }) {
+  const provider = getProvider(modelId);
+  const cfg = PROVIDER_LOGO_CONFIG[provider];
+  return (
+    <svg width="14" height="14" viewBox="0 0 14 14" style={{ display: "inline-block", verticalAlign: "middle", flexShrink: 0 }}>
+      <rect width="14" height="14" rx="3" fill={cfg.bg} />
+      <text
+        x="7"
+        y="10.5"
+        fontSize={cfg.text.length > 1 ? "5.5" : "8"}
+        fontWeight="700"
+        fill="white"
+        textAnchor="middle"
+        fontFamily="system-ui, sans-serif"
+      >
+        {cfg.text}
+      </text>
+    </svg>
+  );
+}
+
+interface LegendPayloadItem {
+  value: string;
+  color: string;
+}
+
+// Custom recharts Legend — shows provider badge + abbreviated model name
+function ModelLegend({ payload }: { payload?: LegendPayloadItem[] }) {
+  if (!payload?.length) return null;
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexWrap: "wrap",
+        gap: "6px 14px",
+        justifyContent: "center",
+        paddingTop: "10px",
+      }}
+    >
+      {payload.map((entry) => (
+        <div
+          key={entry.value}
+          style={{ display: "flex", alignItems: "center", gap: 5, cursor: "default" }}
+          title={entry.value}
+        >
+          <ProviderBadge modelId={entry.value} />
+          <span style={{ fontSize: 11, color: entry.color, fontWeight: 500 }}>
+            {abbreviateModel(entry.value)}
+          </span>
+        </div>
+      ))}
     </div>
   );
 }
@@ -81,18 +134,21 @@ export function SpendOverTime({ byDay }: Props) {
         <XAxis dataKey="date" tick={{ fontSize: 11, fill: "#6b7280" }} stroke="#374151" />
         <YAxis tick={{ fontSize: 11, fill: "#6b7280" }} stroke="#374151" tickFormatter={(v) => `$${v.toFixed(2)}`} />
         <Tooltip content={<CustomTooltip />} />
-        <Legend wrapperStyle={{ fontSize: 11, paddingTop: 8 }} />
-        {allModels.map((model, i) => (
-          <Area
-            key={model}
-            type="monotone"
-            dataKey={model}
-            stackId="1"
-            stroke={MODEL_COLORS[i % MODEL_COLORS.length]}
-            fill={MODEL_COLORS[i % MODEL_COLORS.length]}
-            fillOpacity={0.65}
-          />
-        ))}
+        <Legend content={<ModelLegend />} />
+        {allModels.map((model) => {
+          const color = getModelColor(model);
+          return (
+            <Area
+              key={model}
+              type="monotone"
+              dataKey={model}
+              stackId="1"
+              stroke={color}
+              fill={color}
+              fillOpacity={0.65}
+            />
+          );
+        })}
       </AreaChart>
     </ResponsiveContainer>
   );
